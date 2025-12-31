@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
 
     // Example 1: Create container with health check
     println!("1. Creating container with health check...");
-    
+
     // For this example, we'll use a simple health check command
     // In production, you'd use something like: curl -f http://localhost/health
     let config = ContainerConfig {
@@ -34,40 +34,59 @@ async fn main() -> Result<()> {
         command: vec!["sh".to_string(), "-c".to_string(), "sleep 3600".to_string()],
         env: vec!["PATH=/usr/bin:/bin".to_string()],
         working_dir: "/".to_string(),
-        
+
         // Configure health check
         health_check: Some(HealthCheck {
-            command: vec!["sh".to_string(), "-c".to_string(), "test -f /tmp/healthy".to_string()],
-            interval: 10,        // Check every 10 seconds
-            timeout: 5,          // 5 second timeout
-            retries: 3,          // Mark unhealthy after 3 failures
-            start_period: 30,    // Ignore failures for first 30 seconds
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "test -f /tmp/healthy".to_string(),
+            ],
+            interval: 10,     // Check every 10 seconds
+            timeout: 5,       // 5 second timeout
+            retries: 3,       // Mark unhealthy after 3 failures
+            start_period: 30, // Ignore failures for first 30 seconds
         }),
-        
+
         // Set resource limits
         resources: ResourceLimits {
             memory: Some(512 * 1024 * 1024), // 512MB
-            cpu: Some(0.5),                    // 0.5 CPU cores
+            cpu: Some(0.5),                  // 0.5 CPU cores
             ..Default::default()
         },
-        
+
         ..Default::default()
     };
 
     // Note: In a real scenario, you'd have a proper rootfs
     // For this example, we'll just demonstrate the API
     println!("   Health check configured:");
-    println!("   - Command: {:?}", config.health_check.as_ref().unwrap().command);
-    println!("   - Interval: {}s", config.health_check.as_ref().unwrap().interval);
-    println!("   - Timeout: {}s", config.health_check.as_ref().unwrap().timeout);
-    println!("   - Retries: {}", config.health_check.as_ref().unwrap().retries);
-    println!("   - Start period: {}s", config.health_check.as_ref().unwrap().start_period);
+    println!(
+        "   - Command: {:?}",
+        config.health_check.as_ref().unwrap().command
+    );
+    println!(
+        "   - Interval: {}s",
+        config.health_check.as_ref().unwrap().interval
+    );
+    println!(
+        "   - Timeout: {}s",
+        config.health_check.as_ref().unwrap().timeout
+    );
+    println!(
+        "   - Retries: {}",
+        config.health_check.as_ref().unwrap().retries
+    );
+    println!(
+        "   - Start period: {}s",
+        config.health_check.as_ref().unwrap().start_period
+    );
     println!();
 
     // Example 2: Collect metrics (if container exists)
     println!("2. Metrics Collection Example:");
     println!("   (This would work with a real running container)\n");
-    
+
     // Demonstrate metrics structure
     println!("   Available metrics:");
     println!("   - CPU: usage, throttling, per-CPU stats");
@@ -79,7 +98,7 @@ async fn main() -> Result<()> {
 
     // Example 3: Monitor container health
     println!("3. Health Status Monitoring:");
-    
+
     // Check health status
     println!("   To check container health:");
     println!("   ```rust");
@@ -104,20 +123,25 @@ async fn main() -> Result<()> {
 
     // Example 5: Real metrics collection (if containers exist)
     println!("5. Real Metrics Example:");
-    
+
     let containers = runtime.list().await?;
     if !containers.is_empty() {
-        println!("   Found {} container(s), collecting metrics...\n", containers.len());
-        
+        println!(
+            "   Found {} container(s), collecting metrics...\n",
+            containers.len()
+        );
+
         for container in &containers {
             match runtime.metrics(&container.id).await {
                 Ok(metrics) => {
                     println!("   Container: {}", container.id);
                     println!("   - CPU Usage: {} ns total", metrics.cpu.usage_total);
-                    println!("   - Memory: {} / {} bytes ({:.2}%)",
+                    println!(
+                        "   - Memory: {} / {} bytes ({:.2}%)",
                         metrics.memory.usage,
                         metrics.memory.limit,
-                        (metrics.memory.usage as f64 / metrics.memory.limit as f64) * 100.0);
+                        (metrics.memory.usage as f64 / metrics.memory.limit as f64) * 100.0
+                    );
                     println!("   - Network RX: {} bytes", metrics.network.rx_bytes);
                     println!("   - Network TX: {} bytes", metrics.network.tx_bytes);
                     println!("   - Block I/O Read: {} bytes", metrics.blkio.read_bytes);
@@ -182,4 +206,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-

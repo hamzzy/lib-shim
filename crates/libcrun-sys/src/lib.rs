@@ -41,7 +41,7 @@ pub mod safe {
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
             let context = libcrun_context_new(&mut err);
-            
+
             if context.is_null() {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -52,11 +52,11 @@ pub mod safe {
                     message: "Failed to create libcrun context".to_string(),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(context)
         }
     }
@@ -71,20 +71,18 @@ pub mod safe {
     }
 
     /// Load a container from JSON configuration
-    pub fn container_load_from_memory(config_json: &str) -> Result<*mut libcrun_container_t, CrunError> {
-        let config_cstr = CString::new(config_json)
-            .map_err(|_| CrunError {
-                code: -1,
-                message: "Invalid JSON string".to_string(),
-            })?;
-        
+    pub fn container_load_from_memory(
+        config_json: &str,
+    ) -> Result<*mut libcrun_container_t, CrunError> {
+        let config_cstr = CString::new(config_json).map_err(|_| CrunError {
+            code: -1,
+            message: "Invalid JSON string".to_string(),
+        })?;
+
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
-            let container = libcrun_container_load_from_memory(
-                config_cstr.as_ptr(),
-                &mut err,
-            );
-            
+            let container = libcrun_container_load_from_memory(config_cstr.as_ptr(), &mut err);
+
             if container.is_null() {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -95,11 +93,11 @@ pub mod safe {
                     message: "Failed to load container from JSON".to_string(),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(container)
         }
     }
@@ -119,21 +117,15 @@ pub mod safe {
         container: *mut libcrun_container_t,
         id: &str,
     ) -> Result<(), CrunError> {
-        let id_cstr = CString::new(id)
-            .map_err(|_| CrunError {
-                code: -1,
-                message: "Invalid container ID".to_string(),
-            })?;
-        
+        let id_cstr = CString::new(id).map_err(|_| CrunError {
+            code: -1,
+            message: "Invalid container ID".to_string(),
+        })?;
+
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
-            let result = libcrun_container_create(
-                context,
-                container,
-                id_cstr.as_ptr(),
-                &mut err,
-            );
-            
+            let result = libcrun_container_create(context, container, id_cstr.as_ptr(), &mut err);
+
             if result != 0 {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -144,11 +136,11 @@ pub mod safe {
                     message: format!("Failed to create container: {}", id),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(())
         }
     }
@@ -159,21 +151,15 @@ pub mod safe {
         container: *mut libcrun_container_t,
         id: &str,
     ) -> Result<(), CrunError> {
-        let id_cstr = CString::new(id)
-            .map_err(|_| CrunError {
-                code: -1,
-                message: "Invalid container ID".to_string(),
-            })?;
-        
+        let id_cstr = CString::new(id).map_err(|_| CrunError {
+            code: -1,
+            message: "Invalid container ID".to_string(),
+        })?;
+
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
-            let result = libcrun_container_start(
-                context,
-                container,
-                id_cstr.as_ptr(),
-                &mut err,
-            );
-            
+            let result = libcrun_container_start(context, container, id_cstr.as_ptr(), &mut err);
+
             if result != 0 {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -184,11 +170,11 @@ pub mod safe {
                     message: format!("Failed to start container: {}", id),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(())
         }
     }
@@ -200,22 +186,16 @@ pub mod safe {
         id: &str,
         signal: c_int,
     ) -> Result<(), CrunError> {
-        let id_cstr = CString::new(id)
-            .map_err(|_| CrunError {
-                code: -1,
-                message: "Invalid container ID".to_string(),
-            })?;
-        
+        let id_cstr = CString::new(id).map_err(|_| CrunError {
+            code: -1,
+            message: "Invalid container ID".to_string(),
+        })?;
+
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
-            let result = libcrun_container_kill(
-                context,
-                container,
-                id_cstr.as_ptr(),
-                signal,
-                &mut err,
-            );
-            
+            let result =
+                libcrun_container_kill(context, container, id_cstr.as_ptr(), signal, &mut err);
+
             if result != 0 {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -226,11 +206,11 @@ pub mod safe {
                     message: format!("Failed to kill container: {}", id),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(())
         }
     }
@@ -241,21 +221,15 @@ pub mod safe {
         container: *mut libcrun_container_t,
         id: &str,
     ) -> Result<(), CrunError> {
-        let id_cstr = CString::new(id)
-            .map_err(|_| CrunError {
-                code: -1,
-                message: "Invalid container ID".to_string(),
-            })?;
-        
+        let id_cstr = CString::new(id).map_err(|_| CrunError {
+            code: -1,
+            message: "Invalid container ID".to_string(),
+        })?;
+
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
-            let result = libcrun_container_delete(
-                context,
-                container,
-                id_cstr.as_ptr(),
-                &mut err,
-            );
-            
+            let result = libcrun_container_delete(context, container, id_cstr.as_ptr(), &mut err);
+
             if result != 0 {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -266,11 +240,11 @@ pub mod safe {
                     message: format!("Failed to delete container: {}", id),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(())
         }
     }
@@ -281,21 +255,15 @@ pub mod safe {
         container: *mut libcrun_container_t,
         id: &str,
     ) -> Result<(), CrunError> {
-        let id_cstr = CString::new(id)
-            .map_err(|_| CrunError {
-                code: -1,
-                message: "Invalid container ID".to_string(),
-            })?;
-        
+        let id_cstr = CString::new(id).map_err(|_| CrunError {
+            code: -1,
+            message: "Invalid container ID".to_string(),
+        })?;
+
         unsafe {
             let mut err: *mut libcrun_error_t = ptr::null_mut();
-            let result = libcrun_container_state(
-                context,
-                container,
-                id_cstr.as_ptr(),
-                &mut err,
-            );
-            
+            let result = libcrun_container_state(context, container, id_cstr.as_ptr(), &mut err);
+
             if result != 0 {
                 if let Some(e) = CrunError::from_libcrun_error(err) {
                     libcrun_error_release(&mut err);
@@ -306,11 +274,11 @@ pub mod safe {
                     message: format!("Failed to get container state: {}", id),
                 });
             }
-            
+
             if !err.is_null() {
                 libcrun_error_release(&mut err);
             }
-            
+
             Ok(())
         }
     }
@@ -320,7 +288,7 @@ pub mod safe {
     pub fn get_container_pid(id: &str) -> Option<u32> {
         use std::fs;
         use std::path::PathBuf;
-        
+
         // Try common locations for crun state files
         let state_paths = vec![
             PathBuf::from(format!("/run/crun/{}", id)),
@@ -328,14 +296,15 @@ pub mod safe {
             PathBuf::from(format!("/var/run/crun/{}", id)),
             PathBuf::from(format!("/var/run/crun/{}/state.json", id)),
         ];
-        
+
         for path in state_paths {
             if path.is_file() {
                 // Try to read and parse JSON state file
                 if let Ok(content) = fs::read_to_string(&path) {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                         // Try different possible JSON structures
-                        if let Some(pid) = json.get("pid")
+                        if let Some(pid) = json
+                            .get("pid")
                             .or_else(|| json.get("init_process_pid"))
                             .or_else(|| json.get("state").and_then(|s| s.get("pid")))
                         {
@@ -351,7 +320,8 @@ pub mod safe {
                 if state_file.exists() {
                     if let Ok(content) = fs::read_to_string(&state_file) {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(pid) = json.get("pid")
+                            if let Some(pid) = json
+                                .get("pid")
                                 .or_else(|| json.get("init_process_pid"))
                                 .or_else(|| json.get("state").and_then(|s| s.get("pid")))
                             {
@@ -364,8 +334,7 @@ pub mod safe {
                 }
             }
         }
-        
+
         None
     }
 }
-

@@ -107,7 +107,10 @@ impl VsockClient {
 
                 while !VSOCK_CONNECT_COMPLETE.load(Ordering::SeqCst) {
                     if start_time.elapsed().as_millis() as u64 > timeout_ms {
-                        log::warn!("Vsock connection timed out after {}s, falling back to Unix socket", self.connection_timeout);
+                        log::warn!(
+                            "Vsock connection timed out after {}s, falling back to Unix socket",
+                            self.connection_timeout
+                        );
                         return self.connect_unix_socket();
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -135,13 +138,23 @@ impl VsockClient {
 
     fn connect_unix_socket(&self) -> Result<VsockStream> {
         use std::os::unix::net::UnixStream;
-        log::debug!("Connecting to Unix socket at: {}", self.socket_path.display());
-        let stream = UnixStream::connect(&self.socket_path)
-            .map_err(|e| ShimError::runtime_with_context(
+        log::debug!(
+            "Connecting to Unix socket at: {}",
+            self.socket_path.display()
+        );
+        let stream = UnixStream::connect(&self.socket_path).map_err(|e| {
+            ShimError::runtime_with_context(
                 format!("Failed to connect via Unix socket: {}", e),
-                format!("Ensure agent is running and socket is available at: {}", self.socket_path.display())
-            ))?;
-        log::info!("Unix socket connection established at: {}", self.socket_path.display());
+                format!(
+                    "Ensure agent is running and socket is available at: {}",
+                    self.socket_path.display()
+                ),
+            )
+        })?;
+        log::info!(
+            "Unix socket connection established at: {}",
+            self.socket_path.display()
+        );
         Ok(VsockStream::Unix(stream))
     }
 }
@@ -186,13 +199,12 @@ impl Read for VsockStream {
                 if stream.fd < 0 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotConnected,
-                        "Vsock file descriptor is invalid"
+                        "Vsock file descriptor is invalid",
                     ));
                 }
 
-                let result = unsafe {
-                    libc::read(stream.fd, buf.as_mut_ptr() as *mut c_void, buf.len())
-                };
+                let result =
+                    unsafe { libc::read(stream.fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
 
                 if result < 0 {
                     Err(std::io::Error::last_os_error())
@@ -213,13 +225,12 @@ impl Write for VsockStream {
                 if stream.fd < 0 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotConnected,
-                        "Vsock file descriptor is invalid"
+                        "Vsock file descriptor is invalid",
                     ));
                 }
 
-                let result = unsafe {
-                    libc::write(stream.fd, buf.as_ptr() as *const c_void, buf.len())
-                };
+                let result =
+                    unsafe { libc::write(stream.fd, buf.as_ptr() as *const c_void, buf.len()) };
 
                 if result < 0 {
                     Err(std::io::Error::last_os_error())

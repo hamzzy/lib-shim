@@ -87,7 +87,10 @@ impl ImageStore {
         progress_callback: Option<Box<dyn Fn(PullProgress) + Send>>,
     ) -> Result<ImageInfo> {
         let image_ref = ImageReference::parse(reference).ok_or_else(|| {
-            ShimError::validation("reference", format!("Invalid image reference: {}", reference))
+            ShimError::validation(
+                "reference",
+                format!("Invalid image reference: {}", reference),
+            )
         })?;
 
         log::info!("Pulling image: {}", image_ref.full_name());
@@ -108,9 +111,7 @@ impl ImageStore {
         let token = self.get_auth_token(&image_ref).await?;
 
         // Fetch manifest
-        let manifest = self
-            .fetch_manifest(&image_ref, token.as_deref())
-            .await?;
+        let manifest = self.fetch_manifest(&image_ref, token.as_deref()).await?;
 
         // Parse manifest
         let (config_digest, layer_digests, total_size) = self.parse_manifest(&manifest)?;
@@ -292,10 +293,9 @@ impl ImageStore {
                 .map_err(|e| ShimError::runtime(format!("Auth request failed: {}", e)))?;
 
             if response.status().is_success() {
-                let json: serde_json::Value = response
-                    .json()
-                    .await
-                    .map_err(|e| ShimError::runtime(format!("Failed to parse auth response: {}", e)))?;
+                let json: serde_json::Value = response.json().await.map_err(|e| {
+                    ShimError::runtime(format!("Failed to parse auth response: {}", e))
+                })?;
 
                 if let Some(token) = json["token"].as_str() {
                     return Ok(Some(token.to_string()));
@@ -590,10 +590,7 @@ fn parse_rfc3339_timestamp(s: &str) -> Option<u64> {
         return None;
     }
 
-    let date_parts: Vec<u32> = parts[0]
-        .split('-')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
 
     if date_parts.len() != 3 {
         return None;

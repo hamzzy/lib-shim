@@ -42,13 +42,13 @@ pub struct CreateRequest {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub working_dir: String,
-    
+
     // Advanced features
     pub stdio: StdioConfigProto,
     pub network: NetworkConfigProto,
     pub volumes: Vec<VolumeMountProto>,
     pub resources: ResourceLimitsProto,
-    
+
     // Health check configuration
     #[serde(default)]
     pub health_check: Option<HealthCheckProto>,
@@ -146,7 +146,7 @@ pub struct LogsProto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthStatusProto {
     pub id: String,
-    pub status: String,  // "none", "starting", "healthy", "unhealthy"
+    pub status: String, // "none", "starting", "healthy", "unhealthy"
     pub failing_streak: u32,
     pub last_output: String,
     pub last_check: u64,
@@ -241,4 +241,3 @@ pub fn serialize_response(resp: &Response) -> Vec<u8> {
 pub fn deserialize_response(data: &[u8]) -> Result<Response, Box<dyn std::error::Error>> {
     Ok(bincode::deserialize(data)?)
 }
-

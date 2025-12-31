@@ -31,21 +31,21 @@ impl ShimError {
             context: None,
         }
     }
-    
+
     pub fn runtime_with_context<S1: Into<String>, S2: Into<String>>(msg: S1, ctx: S2) -> Self {
         ShimError::Runtime {
             message: msg.into(),
             context: Some(ctx.into()),
         }
     }
-    
+
     pub fn not_found<S: Into<String>>(resource: S) -> Self {
         ShimError::NotFound {
             resource: resource.into(),
             context: None,
         }
     }
-    
+
     pub fn validation<S1: Into<String>, S2: Into<String>>(field: S1, msg: S2) -> Self {
         ShimError::Validation {
             field: field.into(),
@@ -113,4 +113,3 @@ impl From<serde_json::Error> for ShimError {
 }
 
 pub type Result<T> = std::result::Result<T, ShimError>;
-

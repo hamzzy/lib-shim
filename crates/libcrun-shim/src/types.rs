@@ -226,7 +226,7 @@ impl RuntimeConfig {
     }
 
     /// Load configuration from environment variables
-    /// 
+    ///
     /// Supported variables:
     /// - `LIBCRUN_SOCKET_PATH`: Unix socket path
     /// - `LIBCRUN_VSOCK_PORT`: Vsock port number
@@ -279,7 +279,7 @@ impl RuntimeConfig {
     /// Get all VM asset search paths (including defaults)
     pub fn get_vm_asset_search_paths(&self) -> Vec<PathBuf> {
         let mut paths = self.vm_asset_paths.clone();
-        
+
         // Add default search paths
         let default_paths = [
             PathBuf::from("/usr/share/libcrun-shim"),
@@ -421,7 +421,9 @@ impl RuntimeConfigBuilder {
             vm_asset_paths: self.vm_asset_paths,
             vm_memory: self.vm_memory.unwrap_or_else(default_vm_memory),
             vm_cpus: self.vm_cpus.unwrap_or_else(default_vm_cpus),
-            connection_timeout: self.connection_timeout.unwrap_or_else(default_connection_timeout),
+            connection_timeout: self
+                .connection_timeout
+                .unwrap_or_else(default_connection_timeout),
             vm_disks: self.vm_disks,
             virtiofs_shares: self.virtiofs_shares,
             rosetta: self.rosetta.unwrap_or_default(),
@@ -831,7 +833,13 @@ impl ImageReference {
         } else if let Some(pos) = s.rfind(':') {
             // Check if this : is part of a port number
             let before_colon = &s[..pos];
-            if before_colon.contains('/') || !before_colon.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            if before_colon.contains('/')
+                || !before_colon
+                    .chars()
+                    .last()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+            {
                 (&s[..pos], &s[pos + 1..])
             } else {
                 (s, "latest")
@@ -987,4 +995,3 @@ impl ContainerEvent {
         self
     }
 }
-

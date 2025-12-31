@@ -1,5 +1,5 @@
 use libcrun_shim_proto::*;
-use signal_hook::consts::{SIGINT, SIGTERM, SIGHUP};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -114,7 +114,11 @@ impl ContainerState {
             created_at: p.created_at,
             health_check: p.health_check,
             last_health_check: p.last_health_check,
-            health_status: if p.health_status.is_empty() { "unknown".to_string() } else { p.health_status },
+            health_status: if p.health_status.is_empty() {
+                "unknown".to_string()
+            } else {
+                p.health_status
+            },
             consecutive_failures: p.consecutive_failures,
             #[cfg(target_os = "linux")]
             libcrun_container: None,
@@ -161,44 +165,45 @@ impl AgentState {
                     (Some(LibcrunContext(ctx)), true)
                 }
                 Err(e) => {
-                    log::warn!("libcrun not available in agent: {}, using fallback mode", e.message);
+                    log::warn!(
+                        "libcrun not available in agent: {}, using fallback mode",
+                        e.message
+                    );
                     (None, false)
                 }
             };
-            
+
             let state = Self {
                 containers: RwLock::new(HashMap::new()),
                 state_dir,
                 libcrun_context: context,
                 libcrun_available: available,
             };
-            
+
             // Recover any persisted state
             state.recover_state();
             state
         }
-        
+
         #[cfg(not(target_os = "linux"))]
         {
             let state = Self {
                 containers: RwLock::new(HashMap::new()),
                 state_dir,
             };
-            
+
             // Recover any persisted state
             state.recover_state();
             state
         }
     }
-    
+
     /// Persist current container state to disk
     fn persist_state(&self) {
         let containers = self.containers.read().unwrap();
-        let persisted: Vec<PersistedContainerState> = containers
-            .values()
-            .map(|c| c.to_persisted())
-            .collect();
-        
+        let persisted: Vec<PersistedContainerState> =
+            containers.values().map(|c| c.to_persisted()).collect();
+
         match serde_json::to_string_pretty(&persisted) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(STATE_FILE, json) {
@@ -210,7 +215,7 @@ impl AgentState {
             }
         }
     }
-    
+
     /// Recover state from disk and detect orphaned containers
     fn recover_state(&self) {
         let state_path = PathBuf::from(STATE_FILE);
@@ -218,14 +223,17 @@ impl AgentState {
             log::info!("No previous state found");
             return;
         }
-        
+
         match std::fs::read_to_string(&state_path) {
             Ok(json) => {
                 match serde_json::from_str::<Vec<PersistedContainerState>>(&json) {
                     Ok(persisted) => {
-                        log::info!("Recovering {} containers from previous state", persisted.len());
+                        log::info!(
+                            "Recovering {} containers from previous state",
+                            persisted.len()
+                        );
                         let mut containers = self.containers.write().unwrap();
-                        
+
                         for p in persisted {
                             // Check if the container process is still running
                             let is_running = if let Some(pid) = p.pid {
@@ -233,10 +241,13 @@ impl AgentState {
                             } else {
                                 false
                             };
-                            
+
                             if is_running {
-                                log::info!("Container {} (pid {}) still running, recovering", 
-                                    p.id, p.pid.unwrap_or(0));
+                                log::info!(
+                                    "Container {} (pid {}) still running, recovering",
+                                    p.id,
+                                    p.pid.unwrap_or(0)
+                                );
                                 let mut state = ContainerState::from_persisted(p);
                                 state.status = "running".to_string();
                                 containers.insert(state.id.clone(), state);
@@ -261,15 +272,13 @@ impl AgentState {
             }
         }
     }
-    
+
     /// Check if a process is running
     fn is_process_running(pid: u32) -> bool {
         // Use kill(0) to check if process exists
-        unsafe {
-            libc::kill(pid as libc::pid_t, 0) == 0
-        }
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
-    
+
     /// Cleanup orphaned containers
     fn cleanup_orphans(&self) {
         let mut containers = self.containers.write().unwrap();
@@ -278,7 +287,7 @@ impl AgentState {
             .filter(|(_, c)| c.status == "orphaned")
             .map(|(id, _)| id.clone())
             .collect();
-        
+
         for id in orphans {
             log::info!("Cleaning up orphaned container: {}", id);
             // Try to clean up any remaining resources
@@ -292,11 +301,11 @@ impl AgentState {
         drop(containers);
         self.persist_state();
     }
-    
+
     /// Graceful shutdown - stop all containers
     fn graceful_shutdown(&self) {
         log::info!("Initiating graceful shutdown...");
-        
+
         let container_ids: Vec<String> = {
             let containers = self.containers.read().unwrap();
             containers
@@ -305,51 +314,51 @@ impl AgentState {
                 .map(|(id, _)| id.clone())
                 .collect()
         };
-        
+
         for id in container_ids {
             log::info!("Stopping container {} during shutdown", id);
             if let Err(e) = self.stop_container(&id) {
                 log::error!("Failed to stop container {}: {}", id, e);
             }
         }
-        
+
         // Final state persist
         self.persist_state();
         log::info!("Graceful shutdown complete");
     }
-    
+
     /// Run health checks for all containers that have them configured
     fn run_health_checks(&self) {
         let containers = self.containers.read().unwrap();
-        
+
         for (id, container) in containers.iter() {
             if container.status != "Running" && container.status != "running" {
                 continue;
             }
-            
+
             // Check if container has health check configured
             if let Some(health_check) = &container.health_check {
                 if health_check.command.is_empty() {
                     continue;
                 }
-                
+
                 // Check if enough time has passed since last check
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                    
+
                 let last_check = container.last_health_check.unwrap_or(0);
                 let interval = health_check.interval_secs.unwrap_or(30);
-                
+
                 if now - last_check < interval {
                     continue;
                 }
-                
+
                 // Run health check
                 log::debug!("Running health check for container {}", id);
                 let result = self.execute_health_check(id, &health_check.command);
-                
+
                 match result {
                     Ok(healthy) => {
                         if healthy {
@@ -365,21 +374,25 @@ impl AgentState {
             }
         }
     }
-    
+
     /// Execute a health check command for a container
-    fn execute_health_check(&self, _container_id: &str, command: &[String]) -> Result<bool, String> {
+    fn execute_health_check(
+        &self,
+        _container_id: &str,
+        command: &[String],
+    ) -> Result<bool, String> {
         if command.is_empty() {
             return Err("Empty health check command".to_string());
         }
-        
+
         let output = std::process::Command::new(&command[0])
             .args(&command[1..])
             .output()
             .map_err(|e| format!("Failed to execute health check: {}", e))?;
-        
+
         Ok(output.status.success())
     }
-    
+
     /// Stop a container by ID
     fn stop_container(&self, id: &str) -> Result<(), String> {
         let mut containers = self.containers.write().unwrap();
@@ -389,10 +402,10 @@ impl AgentState {
                 unsafe {
                     libc::kill(pid as libc::pid_t, libc::SIGTERM);
                 }
-                
+
                 // Wait briefly for graceful shutdown
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                
+
                 // Check if still running, send SIGKILL
                 if Self::is_process_running(pid) {
                     log::warn!("Container {} did not stop gracefully, sending SIGKILL", id);
@@ -408,7 +421,7 @@ impl AgentState {
             Err(format!("Container {} not found", id))
         }
     }
-    
+
     #[cfg(target_os = "linux")]
     fn build_oci_config_json(
         rootfs: &str,
@@ -425,9 +438,11 @@ impl AgentState {
         let mut env_vec = env.to_vec();
         let has_path = env_vec.iter().any(|e| e.starts_with("PATH="));
         if !has_path {
-            env_vec.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());
+            env_vec.push(
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+            );
         }
-        
+
         // Build mounts array with default mounts + user volumes
         let mut mounts = vec![
             serde_json::json!({
@@ -460,7 +475,7 @@ impl AgentState {
                 "options": ["nosuid", "noexec", "nodev", "ro"]
             }),
         ];
-        
+
         // Add user-defined volume mounts
         for volume in volumes {
             let mut mount = serde_json::json!({
@@ -468,23 +483,21 @@ impl AgentState {
                 "type": "bind",
                 "source": volume.source,
             });
-            
+
             if !volume.options.is_empty() {
                 mount["options"] = serde_json::json!(volume.options);
             }
-            
+
             mounts.push(mount);
         }
-        
+
         // Build rlimits array with defaults + resource limits
-        let mut rlimits = vec![
-            serde_json::json!({
-                "type": "RLIMIT_NOFILE",
-                "hard": 1024,
-                "soft": 1024
-            }),
-        ];
-        
+        let mut rlimits = vec![serde_json::json!({
+            "type": "RLIMIT_NOFILE",
+            "hard": 1024,
+            "soft": 1024
+        })];
+
         // Add resource limits
         if let Some(memory) = resources.memory {
             if memory > 0 {
@@ -495,7 +508,7 @@ impl AgentState {
                 }));
             }
         }
-        
+
         if let Some(pids) = resources.pids {
             if pids > 0 {
                 rlimits.push(serde_json::json!({
@@ -505,7 +518,7 @@ impl AgentState {
                 }));
             }
         }
-        
+
         // Build resources object
         let mut resources_obj = serde_json::json!({
             "devices": [
@@ -515,7 +528,7 @@ impl AgentState {
                 }
             ]
         });
-        
+
         // Add CPU and memory limits
         if resources.cpu.is_some() || resources.memory.is_some() {
             let mut cpu_obj = serde_json::json!({});
@@ -526,7 +539,7 @@ impl AgentState {
                     cpu_obj["period"] = serde_json::json!(100000);
                 }
             }
-            
+
             let mut memory_obj = serde_json::json!({});
             if let Some(memory) = resources.memory {
                 if memory > 0 {
@@ -538,7 +551,7 @@ impl AgentState {
                     memory_obj["swap"] = serde_json::json!(memory_swap);
                 }
             }
-            
+
             if !cpu_obj.as_object().unwrap().is_empty() {
                 resources_obj["cpu"] = cpu_obj;
             }
@@ -546,7 +559,7 @@ impl AgentState {
                 resources_obj["memory"] = memory_obj;
             }
         }
-        
+
         // Determine network namespace based on network mode
         let network_namespace = match network.mode.as_str() {
             "host" => None, // No network namespace for host mode
@@ -557,18 +570,18 @@ impl AgentState {
                 "type": "network"
             })),
         };
-        
+
         let mut namespaces = vec![
             serde_json::json!({"type": "pid"}),
             serde_json::json!({"type": "ipc"}),
             serde_json::json!({"type": "uts"}),
             serde_json::json!({"type": "mount"}),
         ];
-        
+
         if let Some(ns) = network_namespace {
             namespaces.push(ns);
         }
-        
+
         let oci_config = serde_json::json!({
             "ociVersion": "1.0.0",
             "process": {
@@ -638,9 +651,8 @@ impl AgentState {
                 ]
             }
         });
-        
-        serde_json::to_string_pretty(&oci_config)
-            .map_err(|e| e.to_string())
+
+        serde_json::to_string_pretty(&oci_config).map_err(|e| e.to_string())
     }
 }
 
@@ -652,7 +664,7 @@ impl Drop for AgentState {
             if let Some(LibcrunContext(ctx)) = self.libcrun_context.take() {
                 crun::context_free(ctx);
             }
-            
+
             // Clean up containers
             let containers = self.containers.write().unwrap();
             for (_, state) in containers.iter() {
@@ -739,20 +751,20 @@ fn main() {
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .init();
-    
+
     log::info!("libcrun-shim-agent v{}", env!("CARGO_PKG_VERSION"));
 
     // Create shared state
     let state = Arc::new(AgentState::new());
-    
+
     // Clean up any orphaned containers from previous runs
     state.cleanup_orphans();
 
     // Setup signal handlers
     let state_for_signals = Arc::clone(&state);
-    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])
-        .expect("Failed to register signal handlers");
-    
+    let mut signals =
+        Signals::new([SIGTERM, SIGINT, SIGHUP]).expect("Failed to register signal handlers");
+
     std::thread::spawn(move || {
         for sig in signals.forever() {
             match sig {
@@ -789,13 +801,14 @@ fn main() {
 
     // Remove old socket if it exists
     let _ = std::fs::remove_file(&config.socket_path);
-    
+
     // Listen on a Unix socket for RPC requests
-    let listener = UnixListener::bind(&config.socket_path)
-        .expect("Failed to bind to socket");
-    
+    let listener = UnixListener::bind(&config.socket_path).expect("Failed to bind to socket");
+
     // Set non-blocking so we can check shutdown flag
-    listener.set_nonblocking(true).expect("Failed to set non-blocking");
+    listener
+        .set_nonblocking(true)
+        .expect("Failed to set non-blocking");
 
     log::info!("Agent listening on {}", config.socket_path);
 
@@ -810,16 +823,14 @@ fn main() {
 
     // Persist state periodically
     let state_for_persist = Arc::clone(&state);
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(30));
-            if SHUTDOWN_FLAG.load(Ordering::SeqCst) {
-                break;
-            }
-            state_for_persist.persist_state();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        if SHUTDOWN_FLAG.load(Ordering::SeqCst) {
+            break;
         }
+        state_for_persist.persist_state();
     });
-    
+
     // Container watchdog - monitors container health and detects orphans
     let state_for_watchdog = Arc::clone(&state);
     std::thread::spawn(move || {
@@ -829,24 +840,28 @@ fn main() {
             if SHUTDOWN_FLAG.load(Ordering::SeqCst) {
                 break;
             }
-            
+
             // Check all running containers
             let mut containers = state_for_watchdog.containers.write().unwrap();
             let mut orphaned = Vec::new();
-            
+
             for (id, container) in containers.iter() {
                 if container.status == "Running" {
                     if let Some(pid) = container.pid {
                         // Check if process is still alive
                         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
                         if !alive {
-                            log::warn!("Container {} (PID {}) is no longer running - marking as orphaned", id, pid);
+                            log::warn!(
+                                "Container {} (PID {}) is no longer running - marking as orphaned",
+                                id,
+                                pid
+                            );
                             orphaned.push(id.clone());
                         }
                     }
                 }
             }
-            
+
             // Mark orphaned containers
             for id in orphaned {
                 if let Some(container) = containers.get_mut(&id) {
@@ -854,9 +869,9 @@ fn main() {
                     container.pid = None;
                 }
             }
-            
+
             drop(containers);
-            
+
             // Check health for containers with health checks
             state_for_watchdog.run_health_checks();
         }
@@ -869,7 +884,7 @@ fn main() {
             log::info!("Shutdown flag set, exiting main loop");
             break;
         }
-        
+
         match listener.accept() {
             Ok((stream, _)) => {
                 let state_clone = Arc::clone(&state);
@@ -884,14 +899,14 @@ fn main() {
             }
         }
     }
-    
+
     // Final cleanup
     state.graceful_shutdown();
 }
 
 fn handle_client(mut stream: UnixStream, state: Arc<AgentState>) {
     let mut buffer = vec![0u8; 4096];
-    
+
     loop {
         match stream.read(&mut buffer) {
             Ok(0) => break, // Connection closed
@@ -905,7 +920,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<AgentState>) {
                         continue;
                     }
                 };
-                
+
                 let response = handle_request(request, &state);
                 if let Err(e) = stream.write_all(&serialize_response(&response)) {
                     log::error!("Write error: {}", e);
@@ -930,7 +945,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
             if req.command.is_empty() {
                 return Response::Error("Command cannot be empty".to_string());
             }
-            
+
             // Check if container already exists
             {
                 let containers = state.containers.read().unwrap();
@@ -938,9 +953,9 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                     return Response::Error(format!("Container '{}' already exists", req.id));
                 }
             }
-            
+
             log::info!("Creating container: id={}, rootfs={}", req.id, req.rootfs);
-            
+
             // Try to use libcrun if available
             #[cfg(target_os = "linux")]
             let libcrun_container = if state.libcrun_available {
@@ -961,7 +976,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         return Response::Error(format!("Failed to build OCI config: {}", e));
                     }
                 };
-                
+
                 // Load container from JSON config
                 match crun::container_load_from_memory(&oci_json) {
                     Ok(container) => {
@@ -969,7 +984,10 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                             match crun::container_create(*ctx, container, &req.id) {
                                 Ok(_) => {
-                                    log::info!("Container '{}' created successfully via libcrun", req.id);
+                                    log::info!(
+                                        "Container '{}' created successfully via libcrun",
+                                        req.id
+                                    );
                                     Some(LibcrunContainer(container))
                                 }
                                 Err(e) => {
@@ -986,26 +1004,45 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         }
                     }
                     Err(e) => {
-                        log::warn!("libcrun container load failed: {}, using fallback mode", e.message);
+                        log::warn!(
+                            "libcrun container load failed: {}, using fallback mode",
+                            e.message
+                        );
                         None
                     }
                 }
             } else {
                 None
             };
-            
+
             #[cfg(not(target_os = "linux"))]
             let libcrun_container: Option<*mut libcrun_sys::libcrun_container_t> = None;
-            
+
             // Convert health check from proto if present
             let health_check = req.health_check.map(|hc| HealthCheckConfig {
                 command: hc.command,
-                interval_secs: if hc.interval_secs > 0 { Some(hc.interval_secs) } else { None },
-                timeout_secs: if hc.timeout_secs > 0 { Some(hc.timeout_secs) } else { None },
-                retries: if hc.retries > 0 { Some(hc.retries) } else { None },
-                start_period_secs: if hc.start_period_secs > 0 { Some(hc.start_period_secs) } else { None },
+                interval_secs: if hc.interval_secs > 0 {
+                    Some(hc.interval_secs)
+                } else {
+                    None
+                },
+                timeout_secs: if hc.timeout_secs > 0 {
+                    Some(hc.timeout_secs)
+                } else {
+                    None
+                },
+                retries: if hc.retries > 0 {
+                    Some(hc.retries)
+                } else {
+                    None
+                },
+                start_period_secs: if hc.start_period_secs > 0 {
+                    Some(hc.start_period_secs)
+                } else {
+                    None
+                },
             });
-            
+
             let container_state = ContainerState {
                 id: req.id.clone(),
                 rootfs: req.rootfs,
@@ -1022,22 +1059,29 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                 #[cfg(target_os = "linux")]
                 libcrun_container,
             };
-            
-            state.containers.write().unwrap().insert(req.id.clone(), container_state);
+
+            state
+                .containers
+                .write()
+                .unwrap()
+                .insert(req.id.clone(), container_state);
             state.persist_state();
             Response::Created(req.id)
         }
         Request::Start(id) => {
             let mut containers = state.containers.write().unwrap();
             let container = containers.get_mut(&id);
-            
+
             match container {
                 None => Response::Error(format!("Container '{}' not found", id)),
                 Some(c) => {
                     if c.status == "Running" {
                         Response::Error(format!("Container '{}' is already running", id))
                     } else if c.status == "Stopped" {
-                        Response::Error(format!("Container '{}' is stopped and cannot be restarted", id))
+                        Response::Error(format!(
+                            "Container '{}' is stopped and cannot be restarted",
+                            id
+                        ))
                     } else {
                         // Try to start container via libcrun if available
                         #[cfg(target_os = "linux")]
@@ -1046,18 +1090,21 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                                     match crun::container_start(*ctx, container, &id) {
                                         Ok(_) => {
-                                            log::info!("Container '{}' started successfully via libcrun", id);
+                                            log::info!(
+                                                "Container '{}' started successfully via libcrun",
+                                                id
+                                            );
                                             // Try to get actual PID from container state
-                                            c.pid = crun::get_container_pid(&id)
-                                                .or_else(|| {
-                                                    // Fallback: try to get from container state API
-                                                    None
-                                                });
-                                            
+                                            c.pid = crun::get_container_pid(&id).or_else(|| {
+                                                // Fallback: try to get from container state API
+                                                None
+                                            });
+
                                             // If we still don't have a PID, use placeholder
                                             if c.pid.is_none() {
                                                 log::warn!("Could not retrieve PID for container '{}' from libcrun state, using placeholder", id);
-                                                c.pid = Some(std::process::id()); // Placeholder
+                                                c.pid = Some(std::process::id());
+                                            // Placeholder
                                             } else {
                                                 log::debug!("Container '{}' PID: {:?}", id, c.pid);
                                             }
@@ -1072,13 +1119,13 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 }
                             }
                         }
-                        
+
                         if c.status != "Running" {
                             log::info!("Starting container: {} (fallback mode)", id);
                             c.status = "Running".to_string();
                             c.pid = Some(std::process::id()); // Placeholder
                         }
-                        
+
                         drop(containers);
                         state.persist_state();
                         Response::Started
@@ -1089,7 +1136,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
         Request::Stop(id) => {
             let mut containers = state.containers.write().unwrap();
             let container = containers.get_mut(&id);
-            
+
             match container {
                 None => Response::Error(format!("Container '{}' not found", id)),
                 Some(c) => {
@@ -1102,7 +1149,8 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                             if let Some(LibcrunContainer(container)) = c.libcrun_container {
                                 if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                                     // Use SIGTERM to stop gracefully
-                                    match crun::container_kill(*ctx, container, &id, libc::SIGTERM) {
+                                    match crun::container_kill(*ctx, container, &id, libc::SIGTERM)
+                                    {
                                         Ok(_) => {
                                             log::info!("Container '{}' stopped successfully via libcrun (SIGTERM)", id);
                                         }
@@ -1118,7 +1166,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 }
                             }
                         }
-                        
+
                         log::info!("Stopping container: {}", id);
                         c.status = "Stopped".to_string();
                         c.pid = None;
@@ -1132,12 +1180,15 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
         Request::Delete(id) => {
             let mut containers = state.containers.write().unwrap();
             let container = containers.get(&id);
-            
+
             match container {
                 None => Response::Error(format!("Container '{}' not found", id)),
                 Some(c) => {
                     if c.status == "Running" {
-                        Response::Error(format!("Cannot delete running container '{}'. Stop it first.", id))
+                        Response::Error(format!(
+                            "Cannot delete running container '{}'. Stop it first.",
+                            id
+                        ))
                     } else {
                         // Try to delete container via libcrun if available
                         #[cfg(target_os = "linux")]
@@ -1146,7 +1197,10 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                                     match crun::container_delete(*ctx, container, &id) {
                                         Ok(_) => {
-                                            log::info!("Container '{}' deleted successfully via libcrun", id);
+                                            log::info!(
+                                                "Container '{}' deleted successfully via libcrun",
+                                                id
+                                            );
                                         }
                                         Err(e) => {
                                             // Still remove from our state even if libcrun delete fails
@@ -1158,11 +1212,11 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 }
                             }
                         }
-                        
+
                         // Clean up any container-specific state files
                         let container_state_dir = format!("{}/{}", STATE_DIR, id);
                         let _ = std::fs::remove_dir_all(&container_state_dir);
-                        
+
                         log::info!("Deleting container: {}", id);
                         containers.remove(&id);
                         drop(containers);
@@ -1182,7 +1236,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                     pid: c.pid,
                 })
                 .collect();
-            
+
             Response::List(list)
         }
         Request::Metrics(id) => {
@@ -1268,11 +1322,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
             #[cfg(target_os = "linux")]
             if let Some(pid) = container.pid {
                 let mut cmd = std::process::Command::new("nsenter");
-                cmd.args(&[
-                    "-t", &pid.to_string(),
-                    "-m", "-u", "-i", "-n", "-p",
-                    "--"
-                ]);
+                cmd.args(&["-t", &pid.to_string(), "-m", "-u", "-i", "-n", "-p", "--"]);
                 cmd.args(&req.command);
 
                 match cmd.output() {
@@ -1434,13 +1484,19 @@ fn read_memory_metrics(cgroup_path: &str) -> MemoryMetricsProto {
 
     // cgroup v1 fallback
     if mem.usage == 0 {
-        if let Ok(content) = std::fs::read_to_string(format!("{}/memory.usage_in_bytes", cgroup_path)) {
+        if let Ok(content) =
+            std::fs::read_to_string(format!("{}/memory.usage_in_bytes", cgroup_path))
+        {
             mem.usage = content.trim().parse().unwrap_or(0);
         }
-        if let Ok(content) = std::fs::read_to_string(format!("{}/memory.limit_in_bytes", cgroup_path)) {
+        if let Ok(content) =
+            std::fs::read_to_string(format!("{}/memory.limit_in_bytes", cgroup_path))
+        {
             mem.limit = content.trim().parse().unwrap_or(u64::MAX);
         }
-        if let Ok(content) = std::fs::read_to_string(format!("{}/memory.max_usage_in_bytes", cgroup_path)) {
+        if let Ok(content) =
+            std::fs::read_to_string(format!("{}/memory.max_usage_in_bytes", cgroup_path))
+        {
             mem.max_usage = content.trim().parse().unwrap_or(0);
         }
     }
@@ -1477,7 +1533,9 @@ fn read_blkio_metrics(cgroup_path: &str) -> BlkioMetricsProto {
 
     // cgroup v1 fallback
     if blkio.read_bytes == 0 {
-        if let Ok(content) = std::fs::read_to_string(format!("{}/blkio.throttle.io_service_bytes", cgroup_path)) {
+        if let Ok(content) =
+            std::fs::read_to_string(format!("{}/blkio.throttle.io_service_bytes", cgroup_path))
+        {
             for line in content.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 3 {
@@ -1540,4 +1598,3 @@ fn read_network_metrics(pid: u32) -> NetworkMetricsProto {
 
     net
 }
-

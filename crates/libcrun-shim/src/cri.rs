@@ -50,7 +50,11 @@ pub trait RuntimeService {
     fn list_containers(&self, filter: Option<ContainerFilter>) -> Result<Vec<Container>>;
 
     /// ContainerStatus returns the status of the container.
-    fn container_status(&self, container_id: &str, verbose: bool) -> Result<ContainerStatusResponse>;
+    fn container_status(
+        &self,
+        container_id: &str,
+        verbose: bool,
+    ) -> Result<ContainerStatusResponse>;
 
     /// UpdateContainerResources updates the resource constraints of the container.
     fn update_container_resources(
@@ -63,7 +67,12 @@ pub trait RuntimeService {
     fn reopen_container_log(&self, container_id: &str) -> Result<()>;
 
     /// ExecSync runs a command in a container synchronously.
-    fn exec_sync(&self, container_id: &str, cmd: Vec<String>, timeout: i64) -> Result<ExecSyncResponse>;
+    fn exec_sync(
+        &self,
+        container_id: &str,
+        cmd: Vec<String>,
+        timeout: i64,
+    ) -> Result<ExecSyncResponse>;
 
     /// Exec prepares a streaming endpoint to execute a command in the container.
     fn exec(&self, request: ExecRequest) -> Result<ExecResponse>;
@@ -78,7 +87,10 @@ pub trait RuntimeService {
     fn container_stats(&self, container_id: &str) -> Result<ContainerStats>;
 
     /// ListContainerStats returns stats of all running containers.
-    fn list_container_stats(&self, filter: Option<ContainerStatsFilter>) -> Result<Vec<ContainerStats>>;
+    fn list_container_stats(
+        &self,
+        filter: Option<ContainerStatsFilter>,
+    ) -> Result<Vec<ContainerStats>>;
 
     /// UpdateRuntimeConfig updates the runtime configuration.
     fn update_runtime_config(&self, runtime_config: RuntimeConfig) -> Result<()>;
@@ -750,8 +762,9 @@ impl CriServer {
     fn get_image_store(&mut self) -> Result<&mut crate::ImageStore> {
         if self.image_store.is_none() {
             self.image_store = Some(
-                crate::ImageStore::new(crate::ImageStore::default_path())
-                    .map_err(|e| ShimError::runtime(format!("Failed to create image store: {}", e)))?
+                crate::ImageStore::new(crate::ImageStore::default_path()).map_err(|e| {
+                    ShimError::runtime(format!("Failed to create image store: {}", e))
+                })?,
             );
         }
         Ok(self.image_store.as_mut().unwrap())
@@ -772,23 +785,24 @@ impl CriServer {
         // 2. RuntimeService and ImageService implementations
         // 3. CRI protobuf definitions from kubernetes/cri-api
         // 4. Request/response serialization/deserialization
-        
+
         #[cfg(feature = "cri")]
         {
-            use std::os::unix::net::UnixListener;
             use std::io::prelude::*;
-            
+            use std::os::unix::net::UnixListener;
+
             // Remove old socket if exists
             let _ = std::fs::remove_file(&self.socket_path);
-            
-            let listener = UnixListener::bind(&self.socket_path)
-                .map_err(|e| ShimError::io_with_context(
+
+            let listener = UnixListener::bind(&self.socket_path).map_err(|e| {
+                ShimError::io_with_context(
                     e,
-                    format!("Failed to bind CRI socket: {}", self.socket_path.display())
-                ))?;
-            
+                    format!("Failed to bind CRI socket: {}", self.socket_path.display()),
+                )
+            })?;
+
             log::info!("CRI server listening on {}", self.socket_path.display());
-            
+
             // Accept connections and handle requests
             // In a full implementation, this would use tonic::Server
             for stream in listener.incoming() {
@@ -804,10 +818,10 @@ impl CriServer {
                     }
                 }
             }
-            
+
             Ok(())
         }
-        
+
         #[cfg(not(feature = "cri"))]
         {
             Err(ShimError::runtime(
@@ -858,7 +872,7 @@ impl RuntimeService for RuntimeServiceImpl {
         // Create a pod sandbox (essentially a container with special networking)
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         let container_config = crate::types::ContainerConfig {
             id: format!("pod-{}", config.metadata.uid),
             rootfs: PathBuf::from("/"), // Pod sandbox uses minimal rootfs
@@ -867,49 +881,52 @@ impl RuntimeService for RuntimeServiceImpl {
             working_dir: "/".to_string(),
             ..Default::default()
         };
-        
-        let id = rt.block_on(self.runtime.create(container_config))
+
+        let id = rt
+            .block_on(self.runtime.create(container_config))
             .map_err(|e| ShimError::runtime(format!("Failed to create pod sandbox: {}", e)))?;
-        
+
         Ok(id)
     }
 
     fn stop_pod_sandbox(&self, pod_sandbox_id: &str) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.stop(pod_sandbox_id))
             .map_err(|e| ShimError::runtime(format!("Failed to stop pod sandbox: {}", e)))?;
-        
+
         Ok(())
     }
 
     fn remove_pod_sandbox(&self, pod_sandbox_id: &str) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.delete(pod_sandbox_id))
             .map_err(|e| ShimError::runtime(format!("Failed to remove pod sandbox: {}", e)))?;
-        
+
         Ok(())
     }
 
     fn pod_sandbox_status(&self, pod_sandbox_id: &str, _verbose: bool) -> Result<PodSandboxStatus> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let containers = rt.block_on(self.runtime.list())
+
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let container = containers.iter()
+
+        let container = containers
+            .iter()
             .find(|c| c.id == pod_sandbox_id)
             .ok_or_else(|| ShimError::not_found(format!("Pod sandbox '{}'", pod_sandbox_id)))?;
-        
+
         let state = match container.status {
             crate::types::ContainerStatus::Running => PodSandboxState::SANDBOX_READY,
             _ => PodSandboxState::SANDBOX_NOTREADY,
         };
-        
+
         Ok(PodSandboxStatus {
             id: container.id.clone(),
             metadata: PodSandboxMetadata {
@@ -931,11 +948,13 @@ impl RuntimeService for RuntimeServiceImpl {
     fn list_pod_sandbox(&self, _filter: Option<PodSandboxFilter>) -> Result<Vec<PodSandbox>> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let containers = rt.block_on(self.runtime.list())
+
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let sandboxes: Vec<PodSandbox> = containers.iter()
+
+        let sandboxes: Vec<PodSandbox> = containers
+            .iter()
             .filter(|c| c.id.starts_with("pod-"))
             .map(|c| PodSandbox {
                 id: c.id.clone(),
@@ -955,7 +974,7 @@ impl RuntimeService for RuntimeServiceImpl {
                 runtime_handler: "libcrun-shim".to_string(),
             })
             .collect();
-        
+
         Ok(sandboxes)
     }
 
@@ -967,61 +986,68 @@ impl RuntimeService for RuntimeServiceImpl {
     ) -> Result<String> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         // Convert CRI ContainerConfig to our ContainerConfig
         let container_config = crate::types::ContainerConfig {
             id: format!("{}-{}", pod_sandbox_id, config.metadata.name),
             rootfs: PathBuf::from("/"), // Would come from image
             command: config.command.clone(),
-            env: config.envs.iter().map(|kv| format!("{}={}", kv.key, kv.value)).collect(),
+            env: config
+                .envs
+                .iter()
+                .map(|kv| format!("{}={}", kv.key, kv.value))
+                .collect(),
             working_dir: config.working_dir.clone(),
             ..Default::default()
         };
-        
-        let id = rt.block_on(self.runtime.create(container_config))
+
+        let id = rt
+            .block_on(self.runtime.create(container_config))
             .map_err(|e| ShimError::runtime(format!("Failed to create container: {}", e)))?;
-        
+
         Ok(id)
     }
 
     fn start_container(&self, container_id: &str) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.start(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to start container: {}", e)))?;
-        
+
         Ok(())
     }
 
     fn stop_container(&self, container_id: &str, _timeout: i64) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.stop(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to stop container: {}", e)))?;
-        
+
         Ok(())
     }
 
     fn remove_container(&self, container_id: &str) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.delete(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to remove container: {}", e)))?;
-        
+
         Ok(())
     }
 
     fn list_containers(&self, _filter: Option<ContainerFilter>) -> Result<Vec<Container>> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let containers = rt.block_on(self.runtime.list())
+
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let cri_containers: Vec<Container> = containers.iter()
+
+        let cri_containers: Vec<Container> = containers
+            .iter()
             .filter(|c| !c.id.starts_with("pod-"))
             .map(|c| Container {
                 id: c.id.clone(),
@@ -1045,21 +1071,27 @@ impl RuntimeService for RuntimeServiceImpl {
                 annotations: std::collections::HashMap::new(),
             })
             .collect();
-        
+
         Ok(cri_containers)
     }
 
-    fn container_status(&self, container_id: &str, _verbose: bool) -> Result<ContainerStatusResponse> {
+    fn container_status(
+        &self,
+        container_id: &str,
+        _verbose: bool,
+    ) -> Result<ContainerStatusResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let containers = rt.block_on(self.runtime.list())
+
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let container = containers.iter()
+
+        let container = containers
+            .iter()
             .find(|c| c.id == container_id)
             .ok_or_else(|| ShimError::not_found(format!("Container '{}'", container_id)))?;
-        
+
         Ok(ContainerStatusResponse {
             status: ContainerStatusInfo {
                 id: container.id.clone(),
@@ -1098,7 +1130,9 @@ impl RuntimeService for RuntimeServiceImpl {
         _resources: LinuxContainerResources,
     ) -> Result<()> {
         // Resource updates not fully implemented
-        Err(ShimError::runtime("Update container resources not implemented"))
+        Err(ShimError::runtime(
+            "Update container resources not implemented",
+        ))
     }
 
     fn reopen_container_log(&self, _container_id: &str) -> Result<()> {
@@ -1106,13 +1140,19 @@ impl RuntimeService for RuntimeServiceImpl {
         Ok(()) // No-op
     }
 
-    fn exec_sync(&self, container_id: &str, cmd: Vec<String>, _timeout: i64) -> Result<ExecSyncResponse> {
+    fn exec_sync(
+        &self,
+        container_id: &str,
+        cmd: Vec<String>,
+        _timeout: i64,
+    ) -> Result<ExecSyncResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let (exit_code, stdout, stderr) = rt.block_on(self.runtime.exec(container_id, cmd))
+
+        let (exit_code, stdout, stderr) = rt
+            .block_on(self.runtime.exec(container_id, cmd))
             .map_err(|e| ShimError::runtime(format!("Failed to exec: {}", e)))?;
-        
+
         Ok(ExecSyncResponse {
             stdout: stdout.into_bytes(),
             stderr: stderr.into_bytes(),
@@ -1138,10 +1178,11 @@ impl RuntimeService for RuntimeServiceImpl {
     fn container_stats(&self, container_id: &str) -> Result<ContainerStats> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let metrics = rt.block_on(self.runtime.metrics(container_id))
+
+        let metrics = rt
+            .block_on(self.runtime.metrics(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to get metrics: {}", e)))?;
-        
+
         Ok(ContainerStats {
             attributes: ContainerAttributes {
                 id: container_id.to_string(),
@@ -1154,15 +1195,23 @@ impl RuntimeService for RuntimeServiceImpl {
             },
             cpu: Some(CpuUsage {
                 timestamp: 0,
-                usage_core_nano_seconds: Some(UInt64Value { value: metrics.cpu.total_usage }),
+                usage_core_nano_seconds: Some(UInt64Value {
+                    value: metrics.cpu.total_usage,
+                }),
                 usage_nano_cores: Some(UInt64Value { value: 0 }),
             }),
             memory: Some(MemoryUsage {
                 timestamp: 0,
-                working_set_bytes: Some(UInt64Value { value: metrics.memory.usage }),
+                working_set_bytes: Some(UInt64Value {
+                    value: metrics.memory.usage,
+                }),
                 available_bytes: None,
-                usage_bytes: Some(UInt64Value { value: metrics.memory.usage }),
-                rss_bytes: Some(UInt64Value { value: metrics.memory.usage }),
+                usage_bytes: Some(UInt64Value {
+                    value: metrics.memory.usage,
+                }),
+                rss_bytes: Some(UInt64Value {
+                    value: metrics.memory.usage,
+                }),
                 page_faults: None,
                 major_page_faults: None,
             }),
@@ -1170,7 +1219,10 @@ impl RuntimeService for RuntimeServiceImpl {
         })
     }
 
-    fn list_container_stats(&self, _filter: Option<ContainerStatsFilter>) -> Result<Vec<ContainerStats>> {
+    fn list_container_stats(
+        &self,
+        _filter: Option<ContainerStatsFilter>,
+    ) -> Result<Vec<ContainerStats>> {
         // List stats not fully implemented
         Err(ShimError::runtime("List container stats not implemented"))
     }
@@ -1210,10 +1262,13 @@ impl ImageServiceImpl {
 impl ImageService for ImageServiceImpl {
     fn list_images(&self, _filter: Option<ImageFilter>) -> Result<Vec<Image>> {
         // List images from store
-        let images = self.image_store.list()
+        let images = self
+            .image_store
+            .list()
             .map_err(|e| ShimError::runtime(format!("Failed to list images: {}", e)))?;
-        
-        let cri_images: Vec<Image> = images.iter()
+
+        let cri_images: Vec<Image> = images
+            .iter()
             .map(|img| Image {
                 id: img.id.clone(),
                 repo_tags: vec![img.reference.full_name()],
@@ -1227,18 +1282,21 @@ impl ImageService for ImageServiceImpl {
                 }),
             })
             .collect();
-        
+
         Ok(cri_images)
     }
 
     fn image_status(&self, image: ImageSpec, _verbose: bool) -> Result<ImageStatusResponse> {
         // Get image status from store
-        let images = self.image_store.list()
+        let images = self
+            .image_store
+            .list()
             .map_err(|e| ShimError::runtime(format!("Failed to list images: {}", e)))?;
-        
-        let img = images.iter()
+
+        let img = images
+            .iter()
             .find(|i| i.reference.full_name() == image.image);
-        
+
         if let Some(img) = img {
             Ok(ImageStatusResponse {
                 image: Some(Image {
@@ -1269,18 +1327,20 @@ impl ImageService for ImageServiceImpl {
         // Pull image using store
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let info = rt.block_on(self.image_store.pull(&image.image, None))
+
+        let info = rt
+            .block_on(self.image_store.pull(&image.image, None))
             .map_err(|e| ShimError::runtime(format!("Failed to pull image: {}", e)))?;
-        
+
         Ok(info.id)
     }
 
     fn remove_image(&self, image: ImageSpec) -> Result<()> {
         // Remove image from store
-        self.image_store.remove(&image.image)
+        self.image_store
+            .remove(&image.image)
             .map_err(|e| ShimError::runtime(format!("Failed to remove image: {}", e)))?;
-        
+
         Ok(())
     }
 
@@ -1313,4 +1373,3 @@ mod tests {
         assert_eq!(version.runtime_name, "libcrun-shim");
     }
 }
-

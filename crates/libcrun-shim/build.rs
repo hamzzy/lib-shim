@@ -25,7 +25,9 @@ fn main() {
         .args(["--show-sdk-path"])
         .output()
         .expect("Failed to get SDK path");
-    let sdk_path = String::from_utf8_lossy(&sdk_output.stdout).trim().to_string();
+    let sdk_path = String::from_utf8_lossy(&sdk_output.stdout)
+        .trim()
+        .to_string();
 
     // Compile Swift to object file
     let swift_status = Command::new("swiftc")
@@ -79,7 +81,9 @@ fn main() {
         .args(["--toolchain", "default", "--find", "swift"])
         .output()
         .expect("Failed to find swift");
-    let swift_path = String::from_utf8_lossy(&swift_lib_output.stdout).trim().to_string();
+    let swift_path = String::from_utf8_lossy(&swift_lib_output.stdout)
+        .trim()
+        .to_string();
     if let Some(toolchain_dir) = Path::new(&swift_path).parent().and_then(|p| p.parent()) {
         let swift_lib_dir = toolchain_dir.join("lib").join("swift").join("macosx");
         if swift_lib_dir.exists() {
@@ -89,7 +93,10 @@ fn main() {
 
     // Rebuild if source files change
     println!("cargo:rerun-if-changed={}", swift_source.display());
-    println!("cargo:rerun-if-changed={}", macos_dir.join("VMBridge.h").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        macos_dir.join("VMBridge.h").display()
+    );
 
     println!("cargo:warning=Swift VM bridge compiled successfully");
 }

@@ -1,23 +1,21 @@
 use std::env;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=wrapper.h");
-    
+
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let bindings_file = out_path.join("bindings.rs");
-    
+
     // Try to find libcrun via pkg-config
-    let libcrun_available = pkg_config::Config::new()
-        .probe("libcrun")
-        .is_ok();
-    
+    let libcrun_available = pkg_config::Config::new().probe("libcrun").is_ok();
+
     if libcrun_available {
         println!("cargo:rustc-link-lib=crun");
         println!("cargo:warning=libcrun found! Using real FFI bindings.");
-        
+
         // Generate real bindings from libcrun headers
         let bindings = bindgen::Builder::default()
             .header("wrapper.h")
@@ -33,7 +31,7 @@ fn main() {
             .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
             .generate()
             .expect("Unable to generate bindings from libcrun headers");
-        
+
         bindings
             .write_to_file(&bindings_file)
             .expect("Couldn't write bindings!");
@@ -41,7 +39,7 @@ fn main() {
         // If libcrun is not available, create stub bindings
         println!("cargo:warning=libcrun not found via pkg-config, using stub bindings");
         println!("cargo:warning=To enable real libcrun support, install libcrun-dev (Ubuntu/Debian) or crun-devel (Fedora)");
-        
+
         let stub_bindings = r#"
 // Stub bindings for libcrun when not available
 // Install libcrun-dev (Ubuntu/Debian) or crun-devel (Fedora) to enable real bindings
@@ -147,9 +145,7 @@ pub extern "C" fn libcrun_context_free(_context: *mut libcrun_context_t) {
     // Stub: not implemented
 }
 "#;
-        
-        fs::write(&bindings_file, stub_bindings)
-            .expect("Couldn't write stub bindings!");
+
+        fs::write(&bindings_file, stub_bindings).expect("Couldn't write stub bindings!");
     }
 }
-

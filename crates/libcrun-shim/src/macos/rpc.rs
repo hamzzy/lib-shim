@@ -1,8 +1,8 @@
+use super::vsock::{VsockClient, VsockStream};
 use crate::types::RuntimeConfig;
 use crate::*;
 use libcrun_shim_proto::*;
 use std::io::{Read, Write};
-use super::vsock::{VsockClient, VsockStream};
 
 pub struct RpcClient {
     stream: VsockStream,
@@ -20,8 +20,11 @@ impl RpcClient {
 
         match vsock_client.connect() {
             Ok(stream) => {
-                log::info!("RPC connection established (port: {}, socket: {})",
-                    config.vsock_port, config.socket_path.display());
+                log::info!(
+                    "RPC connection established (port: {}, socket: {})",
+                    config.vsock_port,
+                    config.socket_path.display()
+                );
                 Ok(Self { stream })
             }
             Err(e) => {
@@ -33,10 +36,16 @@ impl RpcClient {
 
     /// Connect with a VM bridge handle for native vsock
     #[cfg(target_os = "macos")]
-    pub fn connect_with_vm_bridge(config: &RuntimeConfig, vm_bridge_handle: *mut std::os::raw::c_void) -> Result<Self> {
+    pub fn connect_with_vm_bridge(
+        config: &RuntimeConfig,
+        vm_bridge_handle: *mut std::os::raw::c_void,
+    ) -> Result<Self> {
         let vsock_client = VsockClient::with_vm_bridge(config, vm_bridge_handle);
         let stream = vsock_client.connect()?;
-        log::info!("RPC connection established via VM bridge (port: {})", config.vsock_port);
+        log::info!(
+            "RPC connection established via VM bridge (port: {})",
+            config.vsock_port
+        );
         Ok(Self { stream })
     }
 
@@ -51,20 +60,18 @@ impl RpcClient {
     pub fn from_stream(stream: VsockStream) -> Self {
         Self { stream }
     }
-    
+
     pub fn call(&mut self, request: Request) -> Result<Response> {
         let data = serialize_request(&request);
         self.stream.write_all(&data)?;
         self.stream.flush()?;
-        
+
         let mut buffer = vec![0u8; 4096];
         let n = self.stream.read(&mut buffer)?;
-        
-        deserialize_response(&buffer[..n])
-            .map_err(|e| ShimError::Serialization {
-                message: e.to_string(),
-                context: Some("Failed to deserialize RPC response".to_string()),
-            })
+
+        deserialize_response(&buffer[..n]).map_err(|e| ShimError::Serialization {
+            message: e.to_string(),
+            context: Some("Failed to deserialize RPC response".to_string()),
+        })
     }
 }
-

@@ -1,5 +1,5 @@
-mod vm;
 pub mod rpc;
+mod vm;
 mod vsock;
 
 use crate::types::RuntimeConfig;
@@ -60,7 +60,10 @@ impl MacOsRuntime {
                     client
                 }
                 Err(e) => {
-                    log::warn!("Vsock connection failed: {}, falling back to Unix socket", e);
+                    log::warn!(
+                        "Vsock connection failed: {}, falling back to Unix socket",
+                        e
+                    );
                     rpc::RpcClient::connect_with_config(vm.config())?
                 }
             }
@@ -95,29 +98,55 @@ impl RuntimeImpl for MacOsRuntime {
             stdio: StdioConfigProto {
                 tty: container_config.stdio.tty,
                 open_stdin: container_config.stdio.open_stdin,
-                stdin_path: container_config.stdio.stdin_path.as_ref().map(|p| p.display().to_string()),
-                stdout_path: container_config.stdio.stdout_path.as_ref().map(|p| p.display().to_string()),
-                stderr_path: container_config.stdio.stderr_path.as_ref().map(|p| p.display().to_string()),
+                stdin_path: container_config
+                    .stdio
+                    .stdin_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                stdout_path: container_config
+                    .stdio
+                    .stdout_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                stderr_path: container_config
+                    .stdio
+                    .stderr_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
             },
             network: NetworkConfigProto {
                 mode: container_config.network.mode,
-                port_mappings: container_config.network.port_mappings.into_iter().map(|pm| PortMappingProto {
-                    host_port: pm.host_port,
-                    container_port: pm.container_port,
-                    protocol: pm.protocol,
-                    host_ip: pm.host_ip,
-                }).collect(),
-                interfaces: container_config.network.interfaces.into_iter().map(|ni| NetworkInterfaceProto {
-                    name: ni.name,
-                    interface_type: ni.interface_type,
-                    config: ni.config,
-                }).collect(),
+                port_mappings: container_config
+                    .network
+                    .port_mappings
+                    .into_iter()
+                    .map(|pm| PortMappingProto {
+                        host_port: pm.host_port,
+                        container_port: pm.container_port,
+                        protocol: pm.protocol,
+                        host_ip: pm.host_ip,
+                    })
+                    .collect(),
+                interfaces: container_config
+                    .network
+                    .interfaces
+                    .into_iter()
+                    .map(|ni| NetworkInterfaceProto {
+                        name: ni.name,
+                        interface_type: ni.interface_type,
+                        config: ni.config,
+                    })
+                    .collect(),
             },
-            volumes: container_config.volumes.into_iter().map(|vm| VolumeMountProto {
-                source: vm.source.display().to_string(),
-                destination: vm.destination.display().to_string(),
-                options: vm.options,
-            }).collect(),
+            volumes: container_config
+                .volumes
+                .into_iter()
+                .map(|vm| VolumeMountProto {
+                    source: vm.source.display().to_string(),
+                    destination: vm.destination.display().to_string(),
+                    options: vm.options,
+                })
+                .collect(),
             resources: ResourceLimitsProto {
                 cpu: container_config.resources.cpu,
                 memory: container_config.resources.memory,
@@ -137,8 +166,13 @@ impl RuntimeImpl for MacOsRuntime {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(req)? {
             Response::Created(id) => Ok(id),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, "RPC create request failed")),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC create request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                "RPC create request failed",
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC create request",
+            )),
         }
     }
 
@@ -146,8 +180,13 @@ impl RuntimeImpl for MacOsRuntime {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(Request::Start(id.to_string()))? {
             Response::Started => Ok(()),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC start request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC start request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC start request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC start request",
+            )),
         }
     }
 
@@ -155,8 +194,13 @@ impl RuntimeImpl for MacOsRuntime {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(Request::Stop(id.to_string()))? {
             Response::Stopped => Ok(()),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC stop request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC stop request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC stop request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC stop request",
+            )),
         }
     }
 
@@ -164,16 +208,22 @@ impl RuntimeImpl for MacOsRuntime {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(Request::Delete(id.to_string()))? {
             Response::Deleted => Ok(()),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC delete request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC delete request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC delete request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC delete request",
+            )),
         }
     }
 
     async fn list(&self) -> Result<Vec<ContainerInfo>> {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(Request::List)? {
-            Response::List(list) => {
-                Ok(list.into_iter().map(|info| ContainerInfo {
+            Response::List(list) => Ok(list
+                .into_iter()
+                .map(|info| ContainerInfo {
                     id: info.id,
                     status: match info.status.as_str() {
                         "Created" => ContainerStatus::Created,
@@ -181,10 +231,15 @@ impl RuntimeImpl for MacOsRuntime {
                         _ => ContainerStatus::Stopped,
                     },
                     pid: info.pid,
-                }).collect())
-            }
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, "RPC list request failed")),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC list request")),
+                })
+                .collect()),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                "RPC list request failed",
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC list request",
+            )),
         }
     }
 
@@ -192,8 +247,13 @@ impl RuntimeImpl for MacOsRuntime {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(Request::Metrics(id.to_string()))? {
             Response::Metrics(m) => Ok(proto_to_metrics(m)),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC metrics request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC metrics request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC metrics request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC metrics request",
+            )),
         }
     }
 
@@ -201,8 +261,13 @@ impl RuntimeImpl for MacOsRuntime {
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
         match rpc.call(Request::AllMetrics)? {
             Response::AllMetrics(list) => Ok(list.into_iter().map(proto_to_metrics).collect()),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, "RPC all_metrics request failed")),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC all_metrics request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                "RPC all_metrics request failed",
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC all_metrics request",
+            )),
         }
     }
 
@@ -221,8 +286,13 @@ impl RuntimeImpl for MacOsRuntime {
                 stderr: l.stderr,
                 timestamp: l.timestamp,
             }),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC logs request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC logs request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC logs request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC logs request",
+            )),
         }
     }
 
@@ -241,8 +311,13 @@ impl RuntimeImpl for MacOsRuntime {
                 last_output: h.last_output,
                 last_check: h.last_check,
             }),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC health request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC health request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC health request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC health request",
+            )),
         }
     }
 
@@ -256,8 +331,13 @@ impl RuntimeImpl for MacOsRuntime {
         });
         match rpc.call(req)? {
             Response::Exec(e) => Ok((e.exit_code, e.stdout, e.stderr)),
-            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC exec request failed for container: {}", id))),
-            _ => Err(ShimError::runtime("Unexpected response type from RPC exec request")),
+            Response::Error(e) => Err(ShimError::runtime_with_context(
+                e,
+                format!("RPC exec request failed for container: {}", id),
+            )),
+            _ => Err(ShimError::runtime(
+                "Unexpected response type from RPC exec request",
+            )),
         }
     }
 }
@@ -307,4 +387,3 @@ fn proto_to_metrics(m: libcrun_shim_proto::ContainerMetricsProto) -> ContainerMe
         },
     }
 }
-

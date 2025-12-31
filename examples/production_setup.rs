@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     // Step 2: Subscribe to events
     println!("2. Subscribing to container events...");
     let mut event_receiver = subscribe_events();
-    
+
     // Spawn event handler
     let runtime_for_events = Arc::new(runtime);
     let runtime_clone = Arc::clone(&runtime_for_events);
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
-            
+
             match event.event_type {
                 ContainerEventType::Create => {
                     println!("📦 Event: Container '{}' created", event.container_id);
@@ -61,17 +61,25 @@ async fn main() -> Result<()> {
                     println!("⏸️  Event: Container '{}' stopped", event.container_id);
                 }
                 ContainerEventType::Die => {
-                    println!("💀 Event: Container '{}' died (exit: {:?})", 
-                        event.container_id, event.exit_code);
+                    println!(
+                        "💀 Event: Container '{}' died (exit: {:?})",
+                        event.container_id, event.exit_code
+                    );
                 }
                 ContainerEventType::Delete => {
                     println!("🗑️  Event: Container '{}' deleted", event.container_id);
                 }
                 ContainerEventType::HealthOk => {
-                    println!("✅ Event: Container '{}' health check passed", event.container_id);
+                    println!(
+                        "✅ Event: Container '{}' health check passed",
+                        event.container_id
+                    );
                 }
                 ContainerEventType::HealthFail => {
-                    println!("❌ Event: Container '{}' health check failed", event.container_id);
+                    println!(
+                        "❌ Event: Container '{}' health check failed",
+                        event.container_id
+                    );
                 }
                 _ => {}
             }
@@ -81,7 +89,7 @@ async fn main() -> Result<()> {
 
     // Step 3: Create container with health check
     println!("3. Creating production container...");
-    
+
     let container_id = "prod-web-server".to_string();
     let config = ContainerConfig {
         id: container_id.clone(),
@@ -92,35 +100,45 @@ async fn main() -> Result<()> {
             "NGINX_HOST=localhost".to_string(),
         ],
         working_dir: "/".to_string(),
-        
+
         // Health check configuration
         health_check: Some(HealthCheck {
-            command: vec!["curl".to_string(), "-f".to_string(), "http://localhost/health".to_string()],
+            command: vec![
+                "curl".to_string(),
+                "-f".to_string(),
+                "http://localhost/health".to_string(),
+            ],
             interval: 30,
             timeout: 10,
             retries: 3,
             start_period: 60, // Grace period after start
         }),
-        
+
         // Resource limits
         resources: ResourceLimits {
             memory: Some(512 * 1024 * 1024), // 512MB
-            cpu: Some(1.0),                   // 1 CPU core
-            pids: Some(100),                  // Max 100 processes
+            cpu: Some(1.0),                  // 1 CPU core
+            pids: Some(100),                 // Max 100 processes
             ..Default::default()
         },
-        
+
         // Logging configuration
         log_driver: "json-file".to_string(),
         log_max_size: 10 * 1024 * 1024, // 10MB
-        
+
         ..Default::default()
     };
 
     println!("   Container config:");
     println!("   - ID: {}", config.id);
-    println!("   - Health check: {:?}", config.health_check.as_ref().unwrap().command);
-    println!("   - Memory limit: {}MB", config.resources.memory.unwrap_or(0) / 1024 / 1024);
+    println!(
+        "   - Health check: {:?}",
+        config.health_check.as_ref().unwrap().command
+    );
+    println!(
+        "   - Memory limit: {}MB",
+        config.resources.memory.unwrap_or(0) / 1024 / 1024
+    );
     println!("   - CPU limit: {}", config.resources.cpu.unwrap_or(0.0));
     println!();
 
@@ -134,42 +152,44 @@ async fn main() -> Result<()> {
     let runtime_for_monitor = Arc::clone(&runtime_for_events);
     let monitor_handle = tokio::spawn(async move {
         let mut iteration = 0;
-        
+
         while !SHUTDOWN.load(Ordering::SeqCst) {
             iteration += 1;
-            
+
             // List containers
             match runtime_for_monitor.list().await {
                 Ok(containers) => {
                     if !containers.is_empty() {
                         println!("\n--- Monitoring Iteration {} ---", iteration);
-                        
+
                         for container in &containers {
                             println!("\n📊 Container: {}", container.id);
                             println!("   Status: {:?}", container.status);
-                            
+
                             // Get metrics
                             match runtime_for_monitor.metrics(&container.id).await {
                                 Ok(metrics) => {
                                     // Calculate CPU usage percentage (simplified)
                                     // In production, you'd track previous values and calculate delta
                                     let cpu_percent = 0.0; // Placeholder - would calculate from usage_total
-                                    
+
                                     let mem_percent = if metrics.memory.limit > 0 {
-                                        (metrics.memory.usage as f64 / metrics.memory.limit as f64) * 100.0
+                                        (metrics.memory.usage as f64 / metrics.memory.limit as f64)
+                                            * 100.0
                                     } else {
                                         0.0
                                     };
-                                    
+
                                     println!("   CPU: {} ns total", metrics.cpu.usage_total);
-                                    println!("   Memory: {:.2}% ({} / {} bytes)", 
-                                        mem_percent,
-                                        metrics.memory.usage,
-                                        metrics.memory.limit);
-                                    println!("   Network: RX {} bytes, TX {} bytes",
-                                        metrics.network.rx_bytes,
-                                        metrics.network.tx_bytes);
-                                    
+                                    println!(
+                                        "   Memory: {:.2}% ({} / {} bytes)",
+                                        mem_percent, metrics.memory.usage, metrics.memory.limit
+                                    );
+                                    println!(
+                                        "   Network: RX {} bytes, TX {} bytes",
+                                        metrics.network.rx_bytes, metrics.network.tx_bytes
+                                    );
+
                                     // Alerts
                                     if mem_percent > 90.0 {
                                         println!("   ⚠️  ALERT: High memory usage!");
@@ -179,7 +199,7 @@ async fn main() -> Result<()> {
                                     println!("   ⚠️  Failed to get metrics: {}", e);
                                 }
                             }
-                            
+
                             // Check health
                             match runtime_for_monitor.health(&container.id).await {
                                 Ok(health) => {
@@ -199,11 +219,11 @@ async fn main() -> Result<()> {
                     eprintln!("⚠️  Failed to list containers: {}", e);
                 }
             }
-            
+
             // Wait before next iteration
             sleep(Duration::from_secs(10)).await;
         }
-        
+
         println!("\n✓ Monitoring stopped");
     });
 
@@ -249,4 +269,3 @@ fn setup_signal_handlers() {
     // In production, you'd use: ctrlc::set_handler(...)
     // The SHUTDOWN flag is set by checking in the main loop
 }
-

@@ -37,14 +37,20 @@ pub trait TaskService {
     fn checkpoint(&self, container_id: &str, options: CheckpointOptions) -> Result<()>;
 
     /// Kill a container or exec with signal
-    fn kill(&self, container_id: &str, exec_id: Option<&str>, signal: u32, all: bool) -> Result<()>;
+    fn kill(&self, container_id: &str, exec_id: Option<&str>, signal: u32, all: bool)
+        -> Result<()>;
 
     /// Exec an additional process inside the container
     fn exec(&self, request: ExecProcessRequest) -> Result<()>;
 
     /// ResizePty resizes the pty of a container or exec
-    fn resize_pty(&self, container_id: &str, exec_id: Option<&str>, width: u32, height: u32)
-        -> Result<()>;
+    fn resize_pty(
+        &self,
+        container_id: &str,
+        exec_id: Option<&str>,
+        width: u32,
+        height: u32,
+    ) -> Result<()>;
 
     /// CloseIO closes the io pipe for a container or exec
     fn close_io(&self, container_id: &str, exec_id: Option<&str>, stdin: bool) -> Result<()>;
@@ -317,10 +323,7 @@ impl ShimV2 {
     /// Start the shim service
     #[cfg(feature = "shim-v2")]
     pub async fn serve(&mut self) -> Result<()> {
-        log::info!(
-            "Starting shim v2 service on {}",
-            self.socket_path.display()
-        );
+        log::info!("Starting shim v2 service on {}", self.socket_path.display());
 
         // Ensure runtime is initialized
         let _ = self.get_runtime().await?;
@@ -331,23 +334,24 @@ impl ShimV2 {
         // 2. Task service implementation using ttrpc::Service
         // 3. Protobuf message definitions from containerd
         // 4. Request/response serialization/deserialization
-        
+
         #[cfg(feature = "shim-v2")]
         {
-            use std::os::unix::net::UnixListener;
             use std::io::prelude::*;
-            
+            use std::os::unix::net::UnixListener;
+
             // Remove old socket if exists
             let _ = std::fs::remove_file(&self.socket_path);
-            
-            let listener = UnixListener::bind(&self.socket_path)
-                .map_err(|e| ShimError::io_with_context(
+
+            let listener = UnixListener::bind(&self.socket_path).map_err(|e| {
+                ShimError::io_with_context(
                     e,
-                    format!("Failed to bind shim socket: {}", self.socket_path.display())
-                ))?;
-            
+                    format!("Failed to bind shim socket: {}", self.socket_path.display()),
+                )
+            })?;
+
             log::info!("Shim v2 listening on {}", self.socket_path.display());
-            
+
             // Accept connections and handle requests
             // In a full implementation, this would use ttrpc::Server
             for stream in listener.incoming() {
@@ -363,10 +367,10 @@ impl ShimV2 {
                     }
                 }
             }
-            
+
             Ok(())
         }
-        
+
         #[cfg(not(feature = "shim-v2"))]
         {
             Err(ShimError::runtime(
@@ -400,7 +404,11 @@ impl TaskServiceImpl {
     /// Create a new task service
     pub async fn new(namespace: String, bundle_path: PathBuf) -> Result<Self> {
         let runtime = crate::ContainerRuntime::new().await?;
-        Ok(Self { runtime, namespace, bundle_path })
+        Ok(Self {
+            runtime,
+            namespace,
+            bundle_path,
+        })
     }
 
     /// Get container ID from shim ID
@@ -415,14 +423,16 @@ impl TaskService for TaskServiceImpl {
         // Use tokio runtime to call async methods
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let containers = rt.block_on(self.runtime.list())
+
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let container = containers.iter()
+
+        let container = containers
+            .iter()
             .find(|c| c.id == container_id)
             .ok_or_else(|| ShimError::not_found(format!("Container '{}'", container_id)))?;
-        
+
         Ok(StateResponse {
             id: container.id.clone(),
             bundle: self.bundle_path.display().to_string(),
@@ -440,59 +450,64 @@ impl TaskService for TaskServiceImpl {
     fn create(&self, request: CreateTaskRequest) -> Result<CreateTaskResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         let config = oci_to_container_config(&request.id, &request.bundle)?;
-        
-        let container_id = rt.block_on(self.runtime.create(config))
+
+        let container_id = rt
+            .block_on(self.runtime.create(config))
             .map_err(|e| ShimError::runtime(format!("Failed to create container: {}", e)))?;
-        
+
         // Get PID from container state
-        let containers = rt.block_on(self.runtime.list())
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let pid = containers.iter()
+
+        let pid = containers
+            .iter()
             .find(|c| c.id == container_id)
             .and_then(|c| c.pid)
             .unwrap_or(0);
-        
+
         Ok(CreateTaskResponse { pid })
     }
 
     fn start(&self, container_id: &str, _exec_id: Option<&str>) -> Result<StartResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.start(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to start container: {}", e)))?;
-        
+
         // Get PID after start
-        let containers = rt.block_on(self.runtime.list())
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let pid = containers.iter()
+
+        let pid = containers
+            .iter()
             .find(|c| c.id == container_id)
             .and_then(|c| c.pid)
             .unwrap_or(0);
-        
+
         Ok(StartResponse { pid })
     }
 
     fn delete(&self, container_id: &str, _exec_id: Option<&str>) -> Result<DeleteResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         // Get container info before delete
-        let containers = rt.block_on(self.runtime.list())
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let container = containers.iter()
-            .find(|c| c.id == container_id);
-        
+
+        let container = containers.iter().find(|c| c.id == container_id);
+
         let pid = container.and_then(|c| c.pid).unwrap_or(0);
-        
+
         rt.block_on(self.runtime.delete(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to delete container: {}", e)))?;
-        
+
         Ok(DeleteResponse {
             pid,
             exit_status: 0,
@@ -503,19 +518,22 @@ impl TaskService for TaskServiceImpl {
     fn pids(&self, container_id: &str) -> Result<PidsResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let containers = rt.block_on(self.runtime.list())
+
+        let containers = rt
+            .block_on(self.runtime.list())
             .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-        
-        let container = containers.iter()
+
+        let container = containers
+            .iter()
             .find(|c| c.id == container_id)
             .ok_or_else(|| ShimError::not_found(format!("Container '{}'", container_id)))?;
-        
-        let processes = container.pid.map(|pid| ProcessInfo {
-            pid,
-            info: None,
-        }).into_iter().collect();
-        
+
+        let processes = container
+            .pid
+            .map(|pid| ProcessInfo { pid, info: None })
+            .into_iter()
+            .collect();
+
         Ok(PidsResponse { processes })
     }
 
@@ -534,10 +552,16 @@ impl TaskService for TaskServiceImpl {
         Err(ShimError::runtime("Checkpoint not implemented"))
     }
 
-    fn kill(&self, container_id: &str, _exec_id: Option<&str>, signal: u32, _all: bool) -> Result<()> {
+    fn kill(
+        &self,
+        container_id: &str,
+        _exec_id: Option<&str>,
+        signal: u32,
+        _all: bool,
+    ) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         // Stop is equivalent to kill with SIGTERM
         if signal == libc::SIGTERM as u32 || signal == 15 {
             rt.block_on(self.runtime.stop(container_id))
@@ -545,7 +569,10 @@ impl TaskService for TaskServiceImpl {
             Ok(())
         } else {
             // For other signals, we'd need to send signal to process
-            Err(ShimError::runtime(format!("Signal {} not supported", signal)))
+            Err(ShimError::runtime(format!(
+                "Signal {} not supported",
+                signal
+            )))
         }
     }
 
@@ -554,7 +581,13 @@ impl TaskService for TaskServiceImpl {
         Err(ShimError::runtime("Exec not fully implemented"))
     }
 
-    fn resize_pty(&self, _container_id: &str, _exec_id: Option<&str>, _width: u32, _height: u32) -> Result<()> {
+    fn resize_pty(
+        &self,
+        _container_id: &str,
+        _exec_id: Option<&str>,
+        _width: u32,
+        _height: u32,
+    ) -> Result<()> {
         // Resize PTY not implemented yet
         Err(ShimError::runtime("Resize PTY not implemented"))
     }
@@ -572,15 +605,15 @@ impl TaskService for TaskServiceImpl {
     fn wait(&self, container_id: &str, _exec_id: Option<&str>) -> Result<WaitResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         // Wait for container to stop
         loop {
-            let containers = rt.block_on(self.runtime.list())
+            let containers = rt
+                .block_on(self.runtime.list())
                 .map_err(|e| ShimError::runtime(format!("Failed to list containers: {}", e)))?;
-            
-            let container = containers.iter()
-                .find(|c| c.id == container_id);
-            
+
+            let container = containers.iter().find(|c| c.id == container_id);
+
             if let Some(container) = container {
                 if container.status == crate::types::ContainerStatus::Stopped {
                     return Ok(WaitResponse {
@@ -594,7 +627,7 @@ impl TaskService for TaskServiceImpl {
                     exited_at: 0,
                 });
             }
-            
+
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
@@ -602,10 +635,11 @@ impl TaskService for TaskServiceImpl {
     fn stats(&self, container_id: &str) -> Result<StatsResponse> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
-        let metrics = rt.block_on(self.runtime.metrics(container_id))
+
+        let metrics = rt
+            .block_on(self.runtime.metrics(container_id))
             .map_err(|e| ShimError::runtime(format!("Failed to get metrics: {}", e)))?;
-        
+
         // Convert metrics to JSON
         let stats_json = serde_json::json!({
             "cpu": {
@@ -628,10 +662,8 @@ impl TaskService for TaskServiceImpl {
                 "current": metrics.pids.current,
             },
         });
-        
-        Ok(StatsResponse {
-            stats: stats_json,
-        })
+
+        Ok(StatsResponse { stats: stats_json })
     }
 
     fn connect(&self, _container_id: &str) -> Result<ConnectResponse> {
@@ -645,10 +677,10 @@ impl TaskService for TaskServiceImpl {
     fn shutdown(&self) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| ShimError::runtime(format!("Failed to create runtime: {}", e)))?;
-        
+
         rt.block_on(self.runtime.shutdown())
             .map_err(|e| ShimError::runtime(format!("Failed to shutdown: {}", e)))?;
-        
+
         Ok(())
     }
 }
@@ -678,11 +710,7 @@ pub fn oci_to_container_config(
 ) -> Result<ContainerConfig> {
     let oci_config = parse_oci_bundle(bundle_path)?;
 
-    let rootfs = bundle_path.join(
-        oci_config["root"]["path"]
-            .as_str()
-            .unwrap_or("rootfs"),
-    );
+    let rootfs = bundle_path.join(oci_config["root"]["path"].as_str().unwrap_or("rootfs"));
 
     let command: Vec<String> = oci_config["process"]["args"]
         .as_array()
@@ -733,4 +761,3 @@ mod tests {
         );
     }
 }
-

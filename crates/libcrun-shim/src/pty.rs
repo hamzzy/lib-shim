@@ -103,7 +103,9 @@ impl Pty {
 
     #[cfg(not(unix))]
     pub fn set_raw_mode(&mut self) -> Result<()> {
-        Err(ShimError::runtime("Raw mode not supported on this platform"))
+        Err(ShimError::runtime(
+            "Raw mode not supported on this platform",
+        ))
     }
 
     /// Restore terminal to original mode

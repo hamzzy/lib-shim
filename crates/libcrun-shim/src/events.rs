@@ -55,8 +55,7 @@ impl EventBroadcaster {
     /// Emit a die event with exit code
     pub fn emit_die(&self, container_id: impl Into<String>, exit_code: i32) {
         self.send(
-            ContainerEvent::new(ContainerEventType::Die, container_id)
-                .with_exit_code(exit_code),
+            ContainerEvent::new(ContainerEventType::Die, container_id).with_exit_code(exit_code),
         );
     }
 
@@ -167,4 +166,3 @@ mod tests {
         assert_eq!(event.exit_code, Some(137));
     }
 }
-
