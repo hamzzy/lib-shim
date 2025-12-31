@@ -1,0 +1,21 @@
+[package]
+name = "libcrun-shim-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line interface for libcrun-shim container runtime"
+
+[[bin]]
+name = "crun-shim"
+path = "src/main.rs"
+
+[dependencies]
+libcrun-shim = { path = "../libcrun-shim" }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+log = { workspace = true }
+env_logger = { workspace = true }
+tabled = "0.15"
+colored = "2"
+

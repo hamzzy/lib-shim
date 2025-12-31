@@ -103,5 +103,14 @@ impl From<std::io::Error> for ShimError {
     }
 }
 
+impl From<serde_json::Error> for ShimError {
+    fn from(e: serde_json::Error) -> Self {
+        ShimError::Serialization {
+            message: e.to_string(),
+            context: Some("JSON parsing error".to_string()),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, ShimError>;
 

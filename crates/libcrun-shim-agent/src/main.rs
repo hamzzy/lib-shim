@@ -633,7 +633,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                     pid: c.pid,
                 })
                 .collect();
-
+            
             Response::List(list)
         }
         Request::Metrics(id) => {
@@ -654,6 +654,108 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                 .collect();
             Response::AllMetrics(metrics)
         }
+        Request::Logs(req) => {
+            let containers = state.containers.read().unwrap();
+            if !containers.contains_key(&req.id) {
+                return Response::Error(format!("Container not found: {}", req.id));
+            }
+
+            // Read logs from container log directory
+            let log_dir = format!("/var/log/containers/{}", req.id);
+            let stdout = read_log_file(&format!("{}/stdout.log", log_dir), req.tail);
+            let stderr = read_log_file(&format!("{}/stderr.log", log_dir), req.tail);
+
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            Response::Logs(libcrun_shim_proto::LogsProto {
+                id: req.id,
+                stdout,
+                stderr,
+                timestamp,
+            })
+        }
+        Request::Health(id) => {
+            let containers = state.containers.read().unwrap();
+            match containers.get(&id) {
+                Some(container) => {
+                    // Basic health check based on container state
+                    let status = if container.status == "running" {
+                        "healthy"
+                    } else if container.status == "created" {
+                        "starting"
+                    } else {
+                        "none"
+                    };
+
+                    Response::Health(libcrun_shim_proto::HealthStatusProto {
+                        id: id.clone(),
+                        status: status.to_string(),
+                        failing_streak: 0,
+                        last_output: String::new(),
+                        last_check: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    })
+                }
+                None => Response::Error(format!("Container not found: {}", id)),
+            }
+        }
+        Request::Exec(req) => {
+            let containers = state.containers.read().unwrap();
+            let container = match containers.get(&req.id) {
+                Some(c) => c,
+                None => return Response::Error(format!("Container not found: {}", req.id)),
+            };
+
+            if container.status != "running" {
+                return Response::Error(format!("Container '{}' is not running", req.id));
+            }
+
+            // Execute command using nsenter
+            #[cfg(target_os = "linux")]
+            if let Some(pid) = container.pid {
+                let mut cmd = std::process::Command::new("nsenter");
+                cmd.args(&[
+                    "-t", &pid.to_string(),
+                    "-m", "-u", "-i", "-n", "-p",
+                    "--"
+                ]);
+                cmd.args(&req.command);
+
+                match cmd.output() {
+                    Ok(output) => {
+                        return Response::Exec(libcrun_shim_proto::ExecResultProto {
+                            exit_code: output.status.code().unwrap_or(-1),
+                            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        return Response::Error(format!("Failed to execute command: {}", e));
+                    }
+                }
+            }
+
+            Response::Error("Container PID not available".to_string())
+        }
+    }
+}
+
+fn read_log_file(path: &str, tail: u32) -> String {
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if tail > 0 {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(tail as usize);
+            lines[start..].join("\n")
+        } else {
+            content
+        }
+    } else {
+        String::new()
     }
 }
 

@@ -11,6 +11,28 @@ pub enum Request {
     Metrics(String),
     /// Get metrics for all containers
     AllMetrics,
+    /// Get logs for a container
+    Logs(LogsRequest),
+    /// Get health status for a container
+    Health(String),
+    /// Execute a command in a container
+    Exec(ExecRequest),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogsRequest {
+    pub id: String,
+    pub tail: u32,
+    pub since: u64,
+    pub timestamps: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecRequest {
+    pub id: String,
+    pub command: Vec<String>,
+    pub env: Vec<String>,
+    pub working_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,7 +108,37 @@ pub enum Response {
     Metrics(ContainerMetricsProto),
     /// Metrics for all containers
     AllMetrics(Vec<ContainerMetricsProto>),
+    /// Container logs
+    Logs(LogsProto),
+    /// Health status
+    Health(HealthStatusProto),
+    /// Exec result
+    Exec(ExecResultProto),
     Error(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LogsProto {
+    pub id: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthStatusProto {
+    pub id: String,
+    pub status: String,  // "none", "starting", "healthy", "unhealthy"
+    pub failing_streak: u32,
+    pub last_output: String,
+    pub last_check: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecResultProto {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

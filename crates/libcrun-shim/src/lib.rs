@@ -1,5 +1,6 @@
 mod types;
 mod error;
+pub mod image;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -9,6 +10,7 @@ pub mod macos;
 
 pub use types::*;
 pub use error::*;
+pub use image::ImageStore;
 
 pub struct ContainerRuntime {
     #[cfg(target_os = "linux")]
@@ -75,6 +77,21 @@ impl ContainerRuntime {
     pub async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>> {
         self.inner.all_metrics().await
     }
+
+    /// Get logs for a container
+    pub async fn logs(&self, id: &str, options: LogOptions) -> Result<ContainerLogs> {
+        self.inner.logs(id, options).await
+    }
+
+    /// Get health status for a container
+    pub async fn health(&self, id: &str) -> Result<HealthStatus> {
+        self.inner.health(id).await
+    }
+
+    /// Execute a command in a running container
+    pub async fn exec(&self, id: &str, command: Vec<String>) -> Result<(i32, String, String)> {
+        self.inner.exec(id, command).await
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -86,6 +103,9 @@ trait RuntimeImpl {
     async fn list(&self) -> Result<Vec<ContainerInfo>>;
     async fn metrics(&self, id: &str) -> Result<ContainerMetrics>;
     async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>>;
+    async fn logs(&self, id: &str, options: LogOptions) -> Result<ContainerLogs>;
+    async fn health(&self, id: &str) -> Result<HealthStatus>;
+    async fn exec(&self, id: &str, command: Vec<String>) -> Result<(i32, String, String)>;
 }
 
 #[cfg(target_os = "macos")]
@@ -97,6 +117,9 @@ trait RuntimeImpl {
     async fn list(&self) -> Result<Vec<ContainerInfo>>;
     async fn metrics(&self, id: &str) -> Result<ContainerMetrics>;
     async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>>;
+    async fn logs(&self, id: &str, options: LogOptions) -> Result<ContainerLogs>;
+    async fn health(&self, id: &str) -> Result<HealthStatus>;
+    async fn exec(&self, id: &str, command: Vec<String>) -> Result<(i32, String, String)>;
 }
 
 #[cfg(test)]

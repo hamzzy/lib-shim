@@ -198,6 +198,61 @@ impl RuntimeImpl for MacOsRuntime {
             _ => Err(ShimError::runtime("Unexpected response type from RPC all_metrics request")),
         }
     }
+
+    async fn logs(&self, id: &str, options: LogOptions) -> Result<ContainerLogs> {
+        let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
+        let req = Request::Logs(libcrun_shim_proto::LogsRequest {
+            id: id.to_string(),
+            tail: options.tail,
+            since: options.since,
+            timestamps: options.timestamps,
+        });
+        match rpc.call(req)? {
+            Response::Logs(l) => Ok(ContainerLogs {
+                id: l.id,
+                stdout: l.stdout,
+                stderr: l.stderr,
+                timestamp: l.timestamp,
+            }),
+            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC logs request failed for container: {}", id))),
+            _ => Err(ShimError::runtime("Unexpected response type from RPC logs request")),
+        }
+    }
+
+    async fn health(&self, id: &str) -> Result<HealthStatus> {
+        let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
+        match rpc.call(Request::Health(id.to_string()))? {
+            Response::Health(h) => Ok(HealthStatus {
+                id: h.id,
+                status: match h.status.as_str() {
+                    "healthy" => HealthState::Healthy,
+                    "unhealthy" => HealthState::Unhealthy,
+                    "starting" => HealthState::Starting,
+                    _ => HealthState::None,
+                },
+                failing_streak: h.failing_streak,
+                last_output: h.last_output,
+                last_check: h.last_check,
+            }),
+            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC health request failed for container: {}", id))),
+            _ => Err(ShimError::runtime("Unexpected response type from RPC health request")),
+        }
+    }
+
+    async fn exec(&self, id: &str, command: Vec<String>) -> Result<(i32, String, String)> {
+        let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
+        let req = Request::Exec(libcrun_shim_proto::ExecRequest {
+            id: id.to_string(),
+            command,
+            env: vec![],
+            working_dir: None,
+        });
+        match rpc.call(req)? {
+            Response::Exec(e) => Ok((e.exit_code, e.stdout, e.stderr)),
+            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC exec request failed for container: {}", id))),
+            _ => Err(ShimError::runtime("Unexpected response type from RPC exec request")),
+        }
+    }
 }
 
 /// Convert proto metrics to local types

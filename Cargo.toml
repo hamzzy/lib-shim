@@ -4,6 +4,7 @@ members = [
     "crates/libcrun-sys",
     "crates/libcrun-shim-proto",
     "crates/libcrun-shim-agent",
+    "crates/libcrun-shim-cli",
 ]
 resolver = "2"
 

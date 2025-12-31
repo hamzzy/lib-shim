@@ -618,6 +618,111 @@ impl RuntimeImpl for LinuxRuntime {
             .map(|(id, state)| collect_container_metrics(id, state.info.pid))
             .collect())
     }
+
+    async fn logs(&self, id: &str, options: LogOptions) -> Result<ContainerLogs> {
+        let containers = self.containers.read().unwrap();
+        let _state = containers.get(id).ok_or_else(|| {
+            ShimError::not_found(format!("Container '{}' not found", id))
+        })?;
+
+        // Read logs from container's log files
+        let log_dir = format!("/var/log/containers/{}", id);
+        let stdout_path = format!("{}/stdout.log", log_dir);
+        let stderr_path = format!("{}/stderr.log", log_dir);
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let stdout = read_log_file(&stdout_path, options.tail, options.since);
+        let stderr = read_log_file(&stderr_path, options.tail, options.since);
+
+        Ok(ContainerLogs {
+            id: id.to_string(),
+            stdout,
+            stderr,
+            timestamp,
+        })
+    }
+
+    async fn health(&self, id: &str) -> Result<HealthStatus> {
+        let containers = self.containers.read().unwrap();
+        let state = containers.get(id).ok_or_else(|| {
+            ShimError::not_found(format!("Container '{}' not found", id))
+        })?;
+
+        // For now, return basic health status based on container state
+        let health_state = match state.info.status {
+            ContainerStatus::Running => HealthState::Healthy,
+            ContainerStatus::Created => HealthState::Starting,
+            ContainerStatus::Stopped => HealthState::None,
+        };
+
+        Ok(HealthStatus {
+            id: id.to_string(),
+            status: health_state,
+            failing_streak: 0,
+            last_output: String::new(),
+            last_check: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        })
+    }
+
+    async fn exec(&self, id: &str, command: Vec<String>) -> Result<(i32, String, String)> {
+        let containers = self.containers.read().unwrap();
+        let state = containers.get(id).ok_or_else(|| {
+            ShimError::not_found(format!("Container '{}' not found", id))
+        })?;
+
+        if state.info.status != ContainerStatus::Running {
+            return Err(ShimError::runtime_with_context(
+                "Container is not running",
+                format!("Container '{}' must be running to execute commands", id),
+            ));
+        }
+
+        // Execute command in container namespace using nsenter
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = state.info.pid {
+            let output = std::process::Command::new("nsenter")
+                .args(&[
+                    "-t", &pid.to_string(),
+                    "-m", "-u", "-i", "-n", "-p",
+                    "--"
+                ])
+                .args(&command)
+                .output()
+                .map_err(|e| ShimError::runtime_with_context(
+                    format!("Failed to execute command: {}", e),
+                    "nsenter may not be available or container namespace inaccessible"
+                ))?;
+
+            return Ok((
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stdout).to_string(),
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Err(ShimError::runtime("Container PID not available"))
+    }
+}
+
+fn read_log_file(path: &str, tail: u32, _since: u64) -> String {
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if tail > 0 {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(tail as usize);
+            lines[start..].join("\n")
+        } else {
+            content
+        }
+    } else {
+        String::new()
+    }
 }
 
 /// Collect metrics for a container from cgroups

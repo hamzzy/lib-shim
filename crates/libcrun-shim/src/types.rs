@@ -351,23 +351,39 @@ pub struct ContainerConfig {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub working_dir: String,
-    
+
     // Advanced features
     /// Container stdio configuration
     #[serde(default)]
     pub stdio: StdioConfig,
-    
+
     /// Network configuration
     #[serde(default)]
     pub network: NetworkConfig,
-    
+
     /// Volume mounts
     #[serde(default)]
     pub volumes: Vec<VolumeMount>,
-    
+
     /// Resource limits
     #[serde(default)]
     pub resources: ResourceLimits,
+
+    /// Health check configuration
+    #[serde(default)]
+    pub health_check: Option<HealthCheck>,
+
+    /// Log driver configuration
+    #[serde(default = "default_log_driver")]
+    pub log_driver: String,
+
+    /// Maximum log size in bytes (0 = unlimited)
+    #[serde(default)]
+    pub log_max_size: u64,
+}
+
+fn default_log_driver() -> String {
+    "json-file".to_string()
 }
 
 impl Default for ContainerConfig {
@@ -382,6 +398,9 @@ impl Default for ContainerConfig {
             network: NetworkConfig::default(),
             volumes: vec![],
             resources: ResourceLimits::default(),
+            health_check: None,
+            log_driver: default_log_driver(),
+            log_max_size: 0,
         }
     }
 }
@@ -602,5 +621,201 @@ pub struct VmMetrics {
     pub cpu_percent: f64,
     /// Number of containers running in VM
     pub container_count: u32,
+}
+
+/// Container log output
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContainerLogs {
+    /// Container ID
+    pub id: String,
+    /// Stdout content
+    pub stdout: String,
+    /// Stderr content
+    pub stderr: String,
+    /// Timestamp of log retrieval
+    pub timestamp: u64,
+}
+
+/// Log retrieval options
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LogOptions {
+    /// Number of lines to return (0 = all)
+    pub tail: u32,
+    /// Return logs since this timestamp (0 = all)
+    pub since: u64,
+    /// Include timestamps in output
+    pub timestamps: bool,
+    /// Follow log output (streaming)
+    pub follow: bool,
+}
+
+/// Health check configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheck {
+    /// Command to run for health check
+    pub command: Vec<String>,
+    /// Interval between checks (seconds)
+    #[serde(default = "default_health_interval")]
+    pub interval: u64,
+    /// Timeout for each check (seconds)
+    #[serde(default = "default_health_timeout")]
+    pub timeout: u64,
+    /// Number of retries before marking unhealthy
+    #[serde(default = "default_health_retries")]
+    pub retries: u32,
+    /// Start period - time before health checks count (seconds)
+    #[serde(default)]
+    pub start_period: u64,
+}
+
+fn default_health_interval() -> u64 {
+    30
+}
+
+fn default_health_timeout() -> u64 {
+    30
+}
+
+fn default_health_retries() -> u32 {
+    3
+}
+
+impl Default for HealthCheck {
+    fn default() -> Self {
+        Self {
+            command: vec![],
+            interval: default_health_interval(),
+            timeout: default_health_timeout(),
+            retries: default_health_retries(),
+            start_period: 0,
+        }
+    }
+}
+
+/// Health check result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthStatus {
+    /// Container ID
+    pub id: String,
+    /// Current health state
+    pub status: HealthState,
+    /// Number of consecutive failures
+    pub failing_streak: u32,
+    /// Last check output
+    pub last_output: String,
+    /// Timestamp of last check
+    pub last_check: u64,
+}
+
+/// Health state
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum HealthState {
+    /// No health check configured
+    None,
+    /// Container is starting, health checks not yet valid
+    Starting,
+    /// Health check passed
+    Healthy,
+    /// Health check failed
+    Unhealthy,
+}
+
+/// OCI image reference
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageReference {
+    /// Registry (e.g., "docker.io", "ghcr.io")
+    pub registry: String,
+    /// Repository (e.g., "library/alpine")
+    pub repository: String,
+    /// Tag or digest
+    pub reference: String,
+}
+
+impl ImageReference {
+    /// Parse an image reference string (e.g., "alpine:latest", "docker.io/library/alpine:3.18")
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+
+        // Split by @digest or :tag
+        let (name_part, reference) = if let Some(pos) = s.rfind('@') {
+            (&s[..pos], &s[pos + 1..])
+        } else if let Some(pos) = s.rfind(':') {
+            // Check if this : is part of a port number
+            let before_colon = &s[..pos];
+            if before_colon.contains('/') || !before_colon.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                (&s[..pos], &s[pos + 1..])
+            } else {
+                (s, "latest")
+            }
+        } else {
+            (s, "latest")
+        };
+
+        // Parse registry and repository
+        let (registry, repository) = if name_part.contains('/') {
+            let parts: Vec<&str> = name_part.splitn(2, '/').collect();
+            let first = parts[0];
+            // Check if first part looks like a registry (has . or :)
+            if first.contains('.') || first.contains(':') || first == "localhost" {
+                (first.to_string(), parts[1].to_string())
+            } else {
+                // Docker Hub short form
+                ("docker.io".to_string(), name_part.to_string())
+            }
+        } else {
+            // Short form like "alpine" -> docker.io/library/alpine
+            ("docker.io".to_string(), format!("library/{}", name_part))
+        };
+
+        Some(Self {
+            registry,
+            repository,
+            reference: reference.to_string(),
+        })
+    }
+
+    /// Get the full image name
+    pub fn full_name(&self) -> String {
+        format!("{}/{}:{}", self.registry, self.repository, self.reference)
+    }
+}
+
+/// OCI image information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInfo {
+    /// Image reference
+    pub reference: ImageReference,
+    /// Image ID (digest)
+    pub id: String,
+    /// Image size in bytes
+    pub size: u64,
+    /// Creation timestamp
+    pub created: u64,
+    /// Architecture
+    pub architecture: String,
+    /// OS
+    pub os: String,
+    /// Labels
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+/// Image pull progress
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullProgress {
+    /// Current layer being pulled
+    pub current_layer: String,
+    /// Total layers
+    pub total_layers: u32,
+    /// Completed layers
+    pub completed_layers: u32,
+    /// Bytes downloaded for current layer
+    pub downloaded_bytes: u64,
+    /// Total bytes for current layer
+    pub total_bytes: u64,
+    /// Status message
+    pub status: String,
 }
 
