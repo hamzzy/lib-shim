@@ -76,6 +76,7 @@ async fn test_macos_rpc_communication() {
         network: NetworkConfigProto::default(),
         volumes: vec![],
         resources: ResourceLimitsProto::default(),
+        health_check: None,
     });
     
     match client.call(create_req).unwrap() {

@@ -314,7 +314,10 @@ impl LinuxRuntime {
         });
         
         serde_json::to_string_pretty(&oci_config)
-            .map_err(|e| ShimError::Serialization(e.to_string()))
+            .map_err(|e| ShimError::Serialization {
+                message: e.to_string(),
+                context: Some("Failed to serialize OCI config".to_string()),
+            })
     }
     
     fn validate_config(config: &ContainerConfig) -> Result<()> {

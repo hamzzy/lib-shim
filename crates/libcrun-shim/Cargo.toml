@@ -2,6 +2,22 @@
 name = "libcrun-shim"
 version = "0.1.0"
 edition = "2021"
+authors = ["Ibrahim Hamzat <hamat.ibrahim3@gmail.com>"]
+description = "A unified Rust library for running OCI containers on Linux and macOS with production-ready features"
+license = "Apache-2.0"
+repository = "https://github.com/yourusername/libcrun-shim"
+homepage = "https://github.com/yourusername/libcrun-shim"
+documentation = "https://docs.rs/libcrun-shim"
+keywords = ["container", "oci", "runtime", "docker", "kubernetes", "containerd", "cri"]
+categories = ["os::unix-apis", "development-tools", "system"]
+readme = "README.md"
+exclude = [
+    "vm-image/",
+    "docker/",
+    "scripts/",
+    ".github/",
+    "target/",
+]
 
 [dependencies]
 tokio = { workspace = true }
