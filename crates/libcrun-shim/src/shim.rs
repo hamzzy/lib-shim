@@ -276,8 +276,11 @@ pub struct ConnectResponse {
 /// Shim v2 implementation
 pub struct ShimV2 {
     socket_path: PathBuf,
+    #[allow(dead_code)]
     bundle_path: PathBuf,
+    #[allow(dead_code)]
     namespace: String,
+    #[allow(dead_code)]
     runtime: Option<crate::ContainerRuntime>,
 }
 
@@ -313,6 +316,7 @@ impl ShimV2 {
     }
 
     /// Get the runtime (creates one if not set)
+    #[allow(dead_code)]
     async fn get_runtime(&mut self) -> Result<&mut crate::ContainerRuntime> {
         if self.runtime.is_none() {
             self.runtime = Some(crate::ContainerRuntime::new().await?);
@@ -395,8 +399,11 @@ impl ShimV2 {
 
 /// Task service implementation that bridges to ContainerRuntime
 pub struct TaskServiceImpl {
+    #[allow(dead_code)]
     runtime: crate::ContainerRuntime,
+    #[allow(dead_code)]
     namespace: String,
+    #[allow(dead_code)]
     bundle_path: PathBuf,
 }
 
@@ -412,6 +419,7 @@ impl TaskServiceImpl {
     }
 
     /// Get container ID from shim ID
+    #[allow(dead_code)]
     fn container_id(&self, shim_id: &str) -> String {
         format!("{}.{}", self.namespace, shim_id)
     }

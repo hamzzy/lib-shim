@@ -46,6 +46,7 @@ pub struct VsockClient {
 
 impl VsockClient {
     /// Create a vsock client with default configuration
+    #[allow(dead_code)]
     pub fn new(port: u32) -> Self {
         let config = RuntimeConfig::default();
         Self {

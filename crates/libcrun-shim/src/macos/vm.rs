@@ -101,6 +101,7 @@ unsafe impl Sync for VirtualMachine {}
 
 impl VirtualMachine {
     /// Start a VM with default configuration
+    #[allow(dead_code)]
     pub async fn start() -> Result<Self> {
         Self::start_with_config(RuntimeConfig::from_env()).await
     }

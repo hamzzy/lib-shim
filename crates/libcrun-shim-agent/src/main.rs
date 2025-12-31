@@ -141,6 +141,7 @@ fn current_timestamp() -> u64 {
 // Shared state for the agent
 struct AgentState {
     containers: RwLock<HashMap<String, ContainerState>>,
+    #[allow(dead_code)]
     state_dir: PathBuf,
     #[cfg(target_os = "linux")]
     libcrun_context: Option<LibcrunContext>,
@@ -1016,7 +1017,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
             };
 
             #[cfg(not(target_os = "linux"))]
-            let libcrun_container: Option<*mut libcrun_sys::libcrun_container_t> = None;
+            let _libcrun_container: Option<*mut libcrun_sys::libcrun_container_t> = None;
 
             // Convert health check from proto if present
             let health_check = req.health_check.map(|hc| HealthCheckConfig {
@@ -1359,13 +1360,13 @@ fn read_log_file(path: &str, tail: u32) -> String {
 }
 
 /// Collect metrics for a container from cgroups
-fn collect_container_metrics(id: &str, pid: Option<u32>) -> ContainerMetricsProto {
+fn collect_container_metrics(id: &str, _pid: Option<u32>) -> ContainerMetricsProto {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let mut metrics = ContainerMetricsProto {
+    let metrics = ContainerMetricsProto {
         id: id.to_string(),
         timestamp,
         ..Default::default()

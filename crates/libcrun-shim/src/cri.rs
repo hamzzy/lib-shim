@@ -315,8 +315,10 @@ pub struct PodSandboxStatus {
 /// Pod sandbox state
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PodSandboxState {
-    SANDBOX_READY,
-    SANDBOX_NOTREADY,
+    #[serde(rename = "SANDBOX_READY")]
+    SandboxReady,
+    #[serde(rename = "SANDBOX_NOTREADY")]
+    SandboxNotready,
 }
 
 /// Pod sandbox network status
@@ -425,9 +427,12 @@ pub struct Mount {
 /// Mount propagation
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum MountPropagation {
-    PROPAGATION_PRIVATE,
-    PROPAGATION_HOST_TO_CONTAINER,
-    PROPAGATION_BIDIRECTIONAL,
+    #[serde(rename = "PROPAGATION_PRIVATE")]
+    PropagationPrivate,
+    #[serde(rename = "PROPAGATION_HOST_TO_CONTAINER")]
+    PropagationHostToContainer,
+    #[serde(rename = "PROPAGATION_BIDIRECTIONAL")]
+    PropagationBidirectional,
 }
 
 /// Device
@@ -489,10 +494,14 @@ pub struct ContainerStateValue {
 /// Container state
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ContainerState {
-    CONTAINER_CREATED,
-    CONTAINER_RUNNING,
-    CONTAINER_EXITED,
-    CONTAINER_UNKNOWN,
+    #[serde(rename = "CONTAINER_CREATED")]
+    ContainerCreated,
+    #[serde(rename = "CONTAINER_RUNNING")]
+    ContainerRunning,
+    #[serde(rename = "CONTAINER_EXITED")]
+    ContainerExited,
+    #[serde(rename = "CONTAINER_UNKNOWN")]
+    ContainerUnknown,
 }
 
 /// Container
@@ -723,7 +732,9 @@ pub struct FilesystemIdentifier {
 /// CRI server implementation
 pub struct CriServer {
     socket_path: PathBuf,
+    #[allow(dead_code)]
     runtime: Option<crate::ContainerRuntime>,
+    #[allow(dead_code)]
     image_store: Option<crate::ImageStore>,
 }
 
@@ -751,6 +762,7 @@ impl CriServer {
     }
 
     /// Get or create runtime
+    #[allow(dead_code)]
     async fn get_runtime(&mut self) -> Result<&mut crate::ContainerRuntime> {
         if self.runtime.is_none() {
             self.runtime = Some(crate::ContainerRuntime::new().await?);
@@ -759,6 +771,7 @@ impl CriServer {
     }
 
     /// Get or create image store
+    #[allow(dead_code)]
     fn get_image_store(&mut self) -> Result<&mut crate::ImageStore> {
         if self.image_store.is_none() {
             self.image_store = Some(
@@ -846,6 +859,7 @@ impl CriServer {
 
 /// CRI Runtime Service implementation that bridges to ContainerRuntime
 pub struct RuntimeServiceImpl {
+    #[allow(dead_code)]
     runtime: crate::ContainerRuntime,
 }
 
@@ -923,8 +937,8 @@ impl RuntimeService for RuntimeServiceImpl {
             .ok_or_else(|| ShimError::not_found(format!("Pod sandbox '{}'", pod_sandbox_id)))?;
 
         let state = match container.status {
-            crate::types::ContainerStatus::Running => PodSandboxState::SANDBOX_READY,
-            _ => PodSandboxState::SANDBOX_NOTREADY,
+            crate::types::ContainerStatus::Running => PodSandboxState::SandboxReady,
+            _ => PodSandboxState::SandboxNotready,
         };
 
         Ok(PodSandboxStatus {
@@ -965,8 +979,8 @@ impl RuntimeService for RuntimeServiceImpl {
                     attempt: 0,
                 },
                 state: match c.status {
-                    crate::types::ContainerStatus::Running => PodSandboxState::SANDBOX_READY,
-                    _ => PodSandboxState::SANDBOX_NOTREADY,
+                    crate::types::ContainerStatus::Running => PodSandboxState::SandboxReady,
+                    _ => PodSandboxState::SandboxNotready,
                 },
                 created_at: 0,
                 labels: std::collections::HashMap::new(),
@@ -1100,9 +1114,9 @@ impl RuntimeService for RuntimeServiceImpl {
                     attempt: 0,
                 },
                 state: match container.status {
-                    crate::types::ContainerStatus::Created => ContainerState::CONTAINER_CREATED,
-                    crate::types::ContainerStatus::Running => ContainerState::CONTAINER_RUNNING,
-                    crate::types::ContainerStatus::Stopped => ContainerState::CONTAINER_EXITED,
+                    crate::types::ContainerStatus::Created => ContainerState::ContainerCreated,
+                    crate::types::ContainerStatus::Running => ContainerState::ContainerRunning,
+                    crate::types::ContainerStatus::Stopped => ContainerState::ContainerExited,
                 },
                 created_at: 0,
                 started_at: 0,
@@ -1246,6 +1260,7 @@ impl RuntimeService for RuntimeServiceImpl {
 
 /// CRI Image Service implementation that bridges to ImageStore
 pub struct ImageServiceImpl {
+    #[allow(dead_code)]
     image_store: crate::ImageStore,
 }
 
