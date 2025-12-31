@@ -194,7 +194,7 @@ mod tests {
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn test_create_and_list() {
-        let runtime = ContainerRuntime::new().await.unwrap();
+        let runtime: ContainerRuntime = ContainerRuntime::new().await.unwrap();
 
         // Create a temporary rootfs directory for testing
         let temp_rootfs = std::env::temp_dir().join(format!("test-rootfs-{}", std::process::id()));
@@ -209,7 +209,7 @@ mod tests {
             ..Default::default()
         };
 
-        let id = runtime.create(config).await.unwrap();
+        let id: String = runtime.create(config).await.unwrap();
         assert_eq!(id, "test-container");
 
         let containers = runtime.list().await.unwrap();
@@ -223,7 +223,7 @@ mod tests {
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn test_container_lifecycle() {
-        let runtime = ContainerRuntime::new().await.unwrap();
+        let runtime: ContainerRuntime = ContainerRuntime::new().await.unwrap();
 
         // Create a temporary rootfs directory for testing
         let temp_rootfs =
@@ -246,7 +246,7 @@ mod tests {
         runtime.start("test").await.unwrap();
 
         // List
-        let containers = runtime.list().await.unwrap();
+        let containers: Vec<ContainerInfo> = runtime.list().await.unwrap();
         assert_eq!(containers.len(), 1);
         assert_eq!(containers[0].status, ContainerStatus::Running);
 
@@ -257,7 +257,7 @@ mod tests {
         runtime.delete("test").await.unwrap();
 
         // List should be empty
-        let containers = runtime.list().await.unwrap();
+        let containers: Vec<ContainerInfo> = runtime.list().await.unwrap();
         assert_eq!(containers.len(), 0);
 
         // Cleanup

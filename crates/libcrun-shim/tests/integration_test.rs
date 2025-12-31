@@ -1,5 +1,4 @@
 use libcrun_shim::{ContainerConfig, ContainerRuntime, ContainerStatus};
-use libcrun_shim_proto::*;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
 use std::thread;

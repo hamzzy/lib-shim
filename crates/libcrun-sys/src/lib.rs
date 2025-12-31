@@ -8,6 +8,22 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+// Mark raw pointer types as Send/Sync for use across threads
+// These are safe because libcrun operations are thread-safe and the pointers
+// are only accessed through the safe wrapper functions
+#[cfg(target_os = "linux")]
+unsafe impl Send for *mut libcrun_context_t {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for *mut libcrun_context_t {}
+#[cfg(target_os = "linux")]
+unsafe impl Send for *mut libcrun_container_t {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for *mut libcrun_container_t {}
+#[cfg(target_os = "linux")]
+unsafe impl Send for *mut libcrun_error_t {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for *mut libcrun_error_t {}
+
 // Safe wrappers around the FFI functions
 pub mod safe {
     use super::*;

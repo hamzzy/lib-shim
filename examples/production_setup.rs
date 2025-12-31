@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
 
     // Spawn event handler
     let runtime_for_events = Arc::new(runtime);
-    let runtime_clone = Arc::clone(&runtime_for_events);
+    let _runtime_clone = Arc::clone(&runtime_for_events);
     tokio::spawn(async move {
         while let Some(event) = event_receiver.recv().await {
             if SHUTDOWN.load(Ordering::SeqCst) {
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
                                 Ok(metrics) => {
                                     // Calculate CPU usage percentage (simplified)
                                     // In production, you'd track previous values and calculate delta
-                                    let cpu_percent = 0.0; // Placeholder - would calculate from usage_total
+                                    let _cpu_percent = 0.0; // Placeholder - would calculate from usage_total
 
                                     let mem_percent = if metrics.memory.limit > 0 {
                                         (metrics.memory.usage as f64 / metrics.memory.limit as f64)
