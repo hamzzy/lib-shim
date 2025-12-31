@@ -206,6 +206,7 @@ mod tests {
             command: vec!["sh".to_string()],
             env: vec!["PATH=/usr/bin".to_string()],
             working_dir: "/".to_string(),
+            ..Default::default()
         };
 
         let id = runtime.create(config).await.unwrap();
@@ -235,6 +236,7 @@ mod tests {
             command: vec!["sleep".to_string(), "10".to_string()],
             env: vec![],
             working_dir: "/".to_string(),
+            ..Default::default()
         };
 
         // Create

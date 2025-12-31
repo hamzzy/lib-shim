@@ -112,6 +112,9 @@ async fn test_linux_runtime_integration() {
         network: Default::default(),
         volumes: vec![],
         resources: Default::default(),
+        health_check: None,
+        log_driver: "json-file".to_string(),
+        log_max_size: 10 * 1024 * 1024,
     };
 
     // Create container
