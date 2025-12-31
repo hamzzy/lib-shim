@@ -19,16 +19,31 @@ pub struct ContainerRuntime {
 }
 
 impl ContainerRuntime {
+    /// Create a new runtime with default configuration (from environment)
     pub async fn new() -> Result<Self> {
+        Self::new_with_config(RuntimeConfig::from_env()).await
+    }
+
+    /// Create a new runtime with custom configuration
+    pub async fn new_with_config(config: RuntimeConfig) -> Result<Self> {
         #[cfg(target_os = "linux")]
-        return Ok(Self {
-            inner: linux::LinuxRuntime::new()?,
-        });
-        
+        {
+            let _ = config; // Linux doesn't use config yet
+            return Ok(Self {
+                inner: linux::LinuxRuntime::new()?,
+            });
+        }
+
         #[cfg(target_os = "macos")]
         return Ok(Self {
-            inner: macos::MacOsRuntime::new().await?,
+            inner: macos::MacOsRuntime::new_with_config(config).await?,
         });
+    }
+
+    /// Get the runtime configuration (macOS only)
+    #[cfg(target_os = "macos")]
+    pub fn config(&self) -> &RuntimeConfig {
+        self.inner.config()
     }
     
     pub async fn create(&self, config: ContainerConfig) -> Result<String> {

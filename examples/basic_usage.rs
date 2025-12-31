@@ -19,6 +19,10 @@ async fn main() -> Result<()> {
         command: vec!["echo".to_string(), "Hello from container!".to_string()],
         env: vec!["PATH=/usr/bin:/bin".to_string()],
         working_dir: "/".to_string(),
+        stdio: Default::default(),
+        network: Default::default(),
+        volumes: vec![],
+        resources: Default::default(),
     };
     
     log::info!("Creating container: {}", config.id);

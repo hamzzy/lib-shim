@@ -1,419 +1,392 @@
+use crate::types::RuntimeConfig;
 use crate::*;
+use std::ffi::CString;
+use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "macos")]
-use objc::runtime::{Class, Object};
-#[cfg(target_os = "macos")]
-use objc::{msg_send, sel, sel_impl};
-#[cfg(target_os = "macos")]
-use block2::{Block, ConcreteBlock, RcBlock};
+use objc::runtime::Class;
 
-/// Virtual Machine wrapper using Apple's Virtualization Framework
+// FFI declarations for Swift VM bridge
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+extern "C" {
+    fn vm_bridge_create() -> *mut c_void;
+    fn vm_bridge_destroy(handle: *mut c_void);
+    fn vm_bridge_create_vm(
+        handle: *mut c_void,
+        kernel_path: *const c_char,
+        initramfs_path: *const c_char,
+        memory_bytes: u64,
+        cpu_count: u32,
+    ) -> bool;
+    fn vm_bridge_start_vm(
+        handle: *mut c_void,
+        callback: extern "C" fn(bool, *const c_char),
+    );
+    fn vm_bridge_stop_vm(
+        handle: *mut c_void,
+        callback: extern "C" fn(bool, *const c_char),
+    );
+    fn vm_bridge_get_state(handle: *mut c_void) -> i32;
+    fn vm_bridge_can_start(handle: *mut c_void) -> bool;
+    fn vm_bridge_can_stop(handle: *mut c_void) -> bool;
+}
+
+// Global state for async completion - used by callbacks
+#[cfg(target_os = "macos")]
+static VM_START_SUCCESS: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static VM_START_COMPLETE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+static VM_STOP_SUCCESS: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+static VM_STOP_COMPLETE: AtomicBool = AtomicBool::new(false);
+
+// Callback functions for Swift bridge
+#[cfg(target_os = "macos")]
+extern "C" fn vm_start_callback(success: bool, error_msg: *const c_char) {
+    if !success && !error_msg.is_null() {
+        let error = unsafe { std::ffi::CStr::from_ptr(error_msg).to_string_lossy() };
+        log::error!("VM start failed: {}", error);
+    } else if success {
+        log::info!("VM start completed successfully");
+    }
+    VM_START_SUCCESS.store(success, Ordering::SeqCst);
+    VM_START_COMPLETE.store(true, Ordering::SeqCst);
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+extern "C" fn vm_stop_callback(success: bool, error_msg: *const c_char) {
+    if !success && !error_msg.is_null() {
+        let error = unsafe { std::ffi::CStr::from_ptr(error_msg).to_string_lossy() };
+        log::error!("VM stop failed: {}", error);
+    } else if success {
+        log::info!("VM stop completed successfully");
+    }
+    VM_STOP_SUCCESS.store(success, Ordering::SeqCst);
+    VM_STOP_COMPLETE.store(true, Ordering::SeqCst);
+}
+
+/// Virtual Machine wrapper using Apple's Virtualization Framework via Swift bridge
+#[allow(dead_code)]
 pub struct VirtualMachine {
     vm_id: String,
     kernel_path: Option<PathBuf>,
     initramfs_path: Option<PathBuf>,
     is_running: bool,
     vsock_port: u32,
+    config: RuntimeConfig,
     #[cfg(target_os = "macos")]
-    vm_instance: Option<*mut Object>,
-    #[cfg(target_os = "macos")]
-    vsock_device: Option<*mut Object>, // VZVirtioSocketDevice from the VM
+    vm_bridge_handle: Option<*mut c_void>,
 }
 
+// VirtualMachine is not Send/Sync due to raw pointer, but we only use it on main thread
+#[cfg(target_os = "macos")]
+unsafe impl Send for VirtualMachine {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for VirtualMachine {}
+
 impl VirtualMachine {
+    /// Start a VM with default configuration
     pub async fn start() -> Result<Self> {
+        Self::start_with_config(RuntimeConfig::from_env()).await
+    }
+
+    /// Start a VM with custom configuration
+    pub async fn start_with_config(config: RuntimeConfig) -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
             // Check if Virtualization Framework is available
             if !Self::is_virtualization_available() {
                 log::warn!("Virtualization Framework not available, using fallback mode");
-                return Self::start_fallback();
+                return Self::start_fallback(config);
             }
 
-            // Find VM assets
-            let kernel_path = Self::find_vm_asset("kernel");
-            let initramfs_path = Self::find_vm_asset("initramfs.cpio.gz");
+            // Find VM assets using configured search paths
+            let search_paths = config.get_vm_asset_search_paths();
+            let kernel_path = Self::find_vm_asset("kernel", &search_paths);
+            let initramfs_path = Self::find_vm_asset("initramfs.cpio.gz", &search_paths);
 
             if kernel_path.is_none() || initramfs_path.is_none() {
-                log::info!("VM assets not found, assuming external VM is running");
-                return Self::start_fallback();
+                log::info!("VM assets not found in paths: {:?}, assuming external VM is running", search_paths);
+                return Self::start_fallback(config);
             }
 
-            let kernel_path_clone = kernel_path.as_ref().unwrap().clone();
-            let initramfs_path_clone = initramfs_path.as_ref().unwrap().clone();
+            let kernel_path_val = kernel_path.as_ref().unwrap().clone();
+            let initramfs_path_val = initramfs_path.as_ref().unwrap().clone();
+
+            log::info!("Found VM kernel: {}", kernel_path_val.display());
+            log::info!("Found VM initramfs: {}", initramfs_path_val.display());
+
+            // Create Swift bridge
+            let bridge_handle = unsafe { vm_bridge_create() };
+            if bridge_handle.is_null() {
+                log::warn!("Failed to create VM bridge, using fallback mode");
+                return Self::start_fallback(config);
+            }
+
+            log::info!("Swift VM bridge created successfully");
 
             // Create VM configuration
-            let (vm_instance, vsock_device) = match Self::create_vm_configuration(&kernel_path_clone, &initramfs_path_clone) {
-                Ok(result) => result,
+            let kernel_cstr = match CString::new(kernel_path_val.to_string_lossy().as_ref()) {
+                Ok(cstr) => cstr,
                 Err(e) => {
-                    log::warn!("Failed to create VM using Virtualization Framework: {}, using fallback", e);
-                    return Self::start_fallback();
+                    log::warn!("Invalid kernel path: {}", e);
+                    unsafe { vm_bridge_destroy(bridge_handle) };
+                    return Self::start_fallback(config);
                 }
             };
 
-            // Start the VM asynchronously
-            match Self::start_vm_async(vm_instance).await {
-                Ok(_) => {
-                    log::info!("VM started successfully using Virtualization Framework");
-                    Ok(Self {
-                        vm_id: "libcrun-shim-vm".to_string(),
-                        kernel_path,
-                        initramfs_path,
-                        is_running: true,
-                        vsock_port: 1234,
-                        vm_instance: Some(vm_instance),
-                        vsock_device,
-                    })
-                }
+            let initramfs_cstr = match CString::new(initramfs_path_val.to_string_lossy().as_ref()) {
+                Ok(cstr) => cstr,
                 Err(e) => {
-                    log::warn!("Failed to start VM: {}, using fallback", e);
-                    // Release the VM instance and vsock device
-                    unsafe {
-                        let _: () = msg_send![vm_instance, release];
-                        if let Some(device) = vsock_device {
-                            let _: () = msg_send![device, release];
-                        }
-                    }
-                    Self::start_fallback()
+                    log::warn!("Invalid initramfs path: {}", e);
+                    unsafe { vm_bridge_destroy(bridge_handle) };
+                    return Self::start_fallback(config);
                 }
+            };
+
+            log::info!(
+                "Creating VM with memory={}MB, cpus={}",
+                config.vm_memory / 1024 / 1024,
+                config.vm_cpus
+            );
+
+            let create_result = unsafe {
+                vm_bridge_create_vm(
+                    bridge_handle,
+                    kernel_cstr.as_ptr(),
+                    initramfs_cstr.as_ptr(),
+                    config.vm_memory,
+                    config.vm_cpus,
+                )
+            };
+
+            if !create_result {
+                log::warn!("Failed to create VM via Swift bridge, using fallback mode");
+                unsafe { vm_bridge_destroy(bridge_handle) };
+                return Self::start_fallback(config);
+            }
+
+            log::info!("VM created successfully via Swift bridge (memory={}MB, cpus={})",
+                config.vm_memory / 1024 / 1024, config.vm_cpus);
+
+            // Reset completion flags
+            VM_START_COMPLETE.store(false, Ordering::SeqCst);
+            VM_START_SUCCESS.store(false, Ordering::SeqCst);
+
+            // Start VM via Swift bridge
+            unsafe {
+                vm_bridge_start_vm(bridge_handle, vm_start_callback);
+            }
+
+            // Wait for completion with timeout from config
+            let timeout_ms = config.connection_timeout * 1000;
+            let start_time = std::time::Instant::now();
+
+            while !VM_START_COMPLETE.load(Ordering::SeqCst) {
+                if start_time.elapsed().as_millis() as u64 > timeout_ms {
+                    log::warn!("VM start timed out after {}s", config.connection_timeout);
+                    unsafe { vm_bridge_destroy(bridge_handle) };
+                    return Self::start_fallback(config);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+
+            if VM_START_SUCCESS.load(Ordering::SeqCst) {
+                log::info!("VM started successfully via Swift bridge");
+                Ok(Self {
+                    vm_id: "libcrun-shim-vm".to_string(),
+                    kernel_path,
+                    initramfs_path,
+                    is_running: true,
+                    vsock_port: config.vsock_port,
+                    config,
+                    vm_bridge_handle: Some(bridge_handle),
+                })
+            } else {
+                log::warn!("VM start failed via Swift bridge, using fallback mode");
+                unsafe { vm_bridge_destroy(bridge_handle) };
+                Self::start_fallback(config)
             }
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            Self::start_fallback()
+            Self::start_fallback(config)
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    async fn start_vm_async(vm_instance: *mut Object) -> Result<()> {
-        use std::sync::mpsc;
-        use std::sync::Mutex;
-
-        // Create a channel for completion
-        let (tx, rx) = mpsc::channel::<Result<()>>();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-
-        // Create completion handler block
-        // The completion handler signature is: void (^completionHandler)(NSError *error)
-        // NSError* can be nil, so we use *mut Object and check for null
-        let tx_clone = Arc::clone(&tx);
-        // Use ConcreteBlock which can be created from a closure
-        // The closure must be 'static, which Arc<Mutex<...>> satisfies
-        let completion_block = {
-            let tx_inner = Arc::clone(&tx_clone);
-            ConcreteBlock::new(move |error: *mut Object| {
-                let result = if error.is_null() {
-                    log::info!("VM started successfully");
-                    Ok(())
-                } else {
-                    // Extract error message if possible
-                    let error_msg = format!("VM start failed with error");
-                    log::error!("{}", error_msg);
-                    Err(ShimError::runtime_with_context(
-                        error_msg,
-                        "Check VM configuration and system requirements"
-                    ))
-                };
-
-                if let Ok(mut sender) = tx_inner.lock() {
-                    if let Some(s) = sender.take() {
-                        let _ = s.send(result);
-                    }
-                }
-            })
-        };
-        // Convert to RcBlock for Objective-C
-        let completion_block = unsafe { RcBlock::copy(completion_block.as_ref() as *const _ as *const Block<(*mut Object,), ()>) };
-
-        // Start the VM with completion handler
-        unsafe {
-            let _: () = msg_send![vm_instance, startWithCompletionHandler: &*completion_block];
-        }
-
-        // Wait for completion (with timeout) - convert to async
-        tokio::task::spawn_blocking(move || rx.recv())
-            .await
-            .map_err(|_| ShimError::runtime("Failed to wait for VM start"))?
-            .map_err(|_| ShimError::runtime("Channel closed before VM start completed"))?
     }
 
     #[cfg(target_os = "macos")]
     fn is_virtualization_available() -> bool {
-        // Check if VZVirtualMachineConfiguration class is available
-        // This requires macOS 11.0+ and Apple Silicon or Intel with T2
         let class = Class::get("VZVirtualMachineConfiguration");
         class.is_some()
     }
 
-    #[cfg(target_os = "macos")]
-    fn create_vm_configuration(
-        kernel_path: &PathBuf,
-        initramfs_path: &PathBuf,
-    ) -> Result<(*mut Object, Option<*mut Object>)> {
-        use std::ffi::CString;
-
-        unsafe {
-            // Get required classes
-            let vm_config_class = Class::get("VZVirtualMachineConfiguration")
-                .ok_or_else(|| ShimError::runtime("VZVirtualMachineConfiguration class not available"))?;
-            
-            let boot_loader_class = Class::get("VZLinuxBootLoader")
-                .ok_or_else(|| ShimError::runtime("VZLinuxBootLoader class not available"))?;
-            
-            let kernel_path_class = Class::get("NSURL")
-                .ok_or_else(|| ShimError::runtime("NSURL class not available"))?;
-            
-            let vsock_class = Class::get("VZVirtioSocketDeviceConfiguration")
-                .ok_or_else(|| ShimError::runtime("VZVirtioSocketDeviceConfiguration class not available"))?;
-
-            // Create kernel URL
-            let kernel_path_str = kernel_path.to_string_lossy();
-            let kernel_cstr = CString::new(kernel_path_str.as_ref())
-                .map_err(|e| ShimError::runtime_with_context(
-                    format!("Failed to create CString for kernel path: {}", e),
-                    format!("Kernel path: {}", kernel_path_str)
-                ))?;
-            
-            let kernel_url: *mut Object = msg_send![kernel_path_class, fileURLWithPath: kernel_cstr.as_ptr()];
-            if kernel_url.is_null() {
-                return Err(ShimError::runtime("Failed to create kernel URL"));
-            }
-
-            // Create initramfs URL
-            let initramfs_path_str = initramfs_path.to_string_lossy();
-            let initramfs_cstr = CString::new(initramfs_path_str.as_ref())
-                .map_err(|e| ShimError::runtime_with_context(
-                    format!("Failed to create CString for initramfs path: {}", e),
-                    format!("Initramfs path: {}", initramfs_path_str)
-                ))?;
-            
-            let initramfs_url: *mut Object = msg_send![kernel_path_class, fileURLWithPath: initramfs_cstr.as_ptr()];
-            if initramfs_url.is_null() {
-                return Err(ShimError::runtime("Failed to create initramfs URL"));
-            }
-
-            // Create boot loader
-            let boot_loader: *mut Object = msg_send![boot_loader_class, alloc];
-            let boot_loader: *mut Object = msg_send![boot_loader, initWithKernelURL: kernel_url];
-            let _: () = msg_send![boot_loader, setInitialRamdiskURL: initramfs_url];
-
-            // Create vsock device configuration
-            let vsock_config: *mut Object = msg_send![vsock_class, alloc];
-            let vsock_config: *mut Object = msg_send![vsock_config, init];
-
-            // Create VM configuration
-            let vm_config: *mut Object = msg_send![vm_config_class, alloc];
-            let vm_config: *mut Object = msg_send![vm_config, init];
-            
-            // Set boot loader
-            let _: () = msg_send![vm_config, setBootLoader: boot_loader];
-            
-            // Set memory (2GB default)
-            // Note: Memory configuration would go here, but requires more complex setup
-            // In a full implementation, we'd create VZVirtualMachineMemorySizeConfiguration
-            
-            // Add vsock device to configuration
-            // We need to create an NSArray containing the vsock config
-            let nsarray_class = Class::get("NSArray")
-                .ok_or_else(|| ShimError::runtime("NSArray class not available"))?;
-            let vsock_array: *mut Object = msg_send![nsarray_class, arrayWithObject: vsock_config];
-            let _: () = msg_send![vm_config, setSocketDevices: vsock_array];
-            
-            // Validate configuration
-            let mut error: *mut Object = std::ptr::null_mut();
-            let is_valid: bool = msg_send![vm_config, validateWithError: &mut error];
-            
-            if !is_valid {
-                return Err(ShimError::runtime("VM configuration validation failed"));
-            }
-
-            // Create VM instance
-            let vm_class = Class::get("VZVirtualMachine")
-                .ok_or_else(|| ShimError::runtime("VZVirtualMachine class not available"))?;
-            
-            let vm_instance: *mut Object = msg_send![vm_class, alloc];
-            let vm_instance: *mut Object = msg_send![vm_instance, initWithConfiguration: vm_config];
-
-            if vm_instance.is_null() {
-                return Err(ShimError::runtime("Failed to create VM instance"));
-            }
-
-            // Retain the VM instance to keep it alive
-            let _: () = msg_send![vm_instance, retain];
-
-            // Get the vsock device from the VM instance
-            // The vsock device is available after VM is created
-            // We'll get it from the VM's socketDevices array
-            let socket_devices: *mut Object = msg_send![vm_instance, socketDevices];
-            let vsock_device = if !socket_devices.is_null() {
-                // Get first device (should be our vsock device)
-                let count: usize = msg_send![socket_devices, count];
-                if count > 0 {
-                    let device: *mut Object = msg_send![socket_devices, objectAtIndex: 0usize];
-                    if !device.is_null() {
-                        let _: () = msg_send![device, retain];
-                        Some(device)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            Ok((vm_instance, vsock_device))
-        }
-    }
-
-    fn start_fallback() -> Result<Self> {
+    fn start_fallback(config: RuntimeConfig) -> Result<Self> {
+        log::info!("Using fallback mode - assuming external VM is running");
+        log::info!("Fallback socket path: {}", config.socket_path.display());
+        log::info!("Fallback vsock port: {}", config.vsock_port);
         Ok(Self {
             vm_id: "libcrun-shim-vm".to_string(),
             kernel_path: None,
             initramfs_path: None,
-            is_running: true, // Assume running for now
-            vsock_port: 1234,
+            is_running: true,
+            vsock_port: config.vsock_port,
+            config,
             #[cfg(target_os = "macos")]
-            vm_instance: None,
-            #[cfg(target_os = "macos")]
-            vsock_device: None,
+            vm_bridge_handle: None,
         })
     }
 
-    /// Get the vsock device for creating connections
-    #[cfg(target_os = "macos")]
-    pub fn get_vsock_device(&self) -> Option<*mut Object> {
-        self.vsock_device
+    /// Get the runtime configuration
+    pub fn config(&self) -> &RuntimeConfig {
+        &self.config
     }
-    
-    fn find_vm_asset(name: &str) -> Option<PathBuf> {
-        // Look for VM assets in common locations
-        let search_paths = vec![
+
+    /// Check if VM operations are available via Swift bridge
+    #[cfg(target_os = "macos")]
+    pub fn has_vm_control(&self) -> bool {
+        self.vm_bridge_handle.is_some()
+    }
+
+    /// Get the VM bridge handle for vsock connections
+    #[cfg(target_os = "macos")]
+    pub fn get_bridge_handle(&self) -> Option<*mut c_void> {
+        self.vm_bridge_handle
+    }
+
+    /// Get VM state (0=starting, 1=stopped, 2=paused, 3=running, 4=error)
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    pub fn get_state(&self) -> i32 {
+        if let Some(handle) = self.vm_bridge_handle {
+            unsafe { vm_bridge_get_state(handle) }
+        } else {
+            -1
+        }
+    }
+
+    fn find_vm_asset(name: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
+        // First, check directly provided paths
+        for base_path in search_paths {
+            // Check the base path directly (if it's a file)
+            if base_path.file_name().map(|n| n == name).unwrap_or(false) && base_path.exists() {
+                return Some(base_path.clone());
+            }
+
+            // Check as a directory containing vm-assets
+            let asset_path = base_path.join("vm-assets").join(name);
+            if asset_path.exists() {
+                log::debug!("Found VM asset at: {}", asset_path.display());
+                return Some(asset_path);
+            }
+
+            // Check as a directory directly containing the asset
+            let direct_path = base_path.join(name);
+            if direct_path.exists() {
+                log::debug!("Found VM asset at: {}", direct_path.display());
+                return Some(direct_path);
+            }
+        }
+
+        // Also check relative paths for development
+        let dev_paths = [
             PathBuf::from("vm-assets").join(name),
             PathBuf::from("../vm-assets").join(name),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vm-assets").join(name),
         ];
-        
-        for path in search_paths {
+
+        for path in dev_paths {
             if path.exists() {
+                log::debug!("Found VM asset at: {}", path.display());
                 return Some(path);
             }
         }
-        
+
+        log::debug!("VM asset '{}' not found in any search path", name);
         None
     }
-    
+
+    #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.is_running
     }
-    
+
+    #[allow(dead_code)]
     pub fn get_vsock_port(&self) -> u32 {
         self.vsock_port
     }
-    
+
+    #[allow(dead_code)]
     pub async fn stop(&mut self) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
-            if let Some(vm_instance) = self.vm_instance {
-                match Self::stop_vm_async(vm_instance).await {
-                    Ok(_) => {
-                        log::info!("VM stopped successfully");
-                        // Release the VM instance
-                        unsafe {
-                            let _: () = msg_send![vm_instance, release];
-                        }
-                        self.vm_instance = None;
-                    }
-                    Err(e) => {
-                        log::warn!("Error stopping VM: {}", e);
-                        // Still mark as stopped
-                        unsafe {
-                            let _: () = msg_send![vm_instance, release];
-                        }
-                        self.vm_instance = None;
-                    }
+            if let Some(bridge_handle) = self.vm_bridge_handle {
+                // Reset completion flags
+                VM_STOP_COMPLETE.store(false, Ordering::SeqCst);
+                VM_STOP_SUCCESS.store(false, Ordering::SeqCst);
+
+                // Stop VM via Swift bridge
+                unsafe {
+                    vm_bridge_stop_vm(bridge_handle, vm_stop_callback);
                 }
+
+                // Wait for completion with timeout
+                let timeout_ms = 10000; // 10 seconds
+                let start_time = std::time::Instant::now();
+
+                while !VM_STOP_COMPLETE.load(Ordering::SeqCst) {
+                    if start_time.elapsed().as_millis() > timeout_ms {
+                        log::warn!("VM stop timed out, forcing cleanup");
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+
+                if VM_STOP_SUCCESS.load(Ordering::SeqCst) {
+                    log::info!("VM stopped successfully via Swift bridge");
+                } else {
+                    log::warn!("VM stop may not have completed cleanly");
+                }
+
+                // Destroy bridge
+                unsafe {
+                    vm_bridge_destroy(bridge_handle);
+                }
+                self.vm_bridge_handle = None;
             }
         }
-        
+
         self.is_running = false;
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
-    async fn stop_vm_async(vm_instance: *mut Object) -> Result<()> {
-        use std::sync::mpsc;
-        use std::sync::Mutex;
-
-        // Create a channel for completion
-        let (tx, rx) = mpsc::channel::<Result<()>>();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-
-        // Create completion handler block
-        // The completion handler signature is: void (^completionHandler)(NSError *error)
-        // NSError* can be nil, so we use *mut Object and check for null
-        let tx_clone = Arc::clone(&tx);
-        // Use ConcreteBlock which can be created from a closure
-        let completion_block = {
-            let tx_inner = Arc::clone(&tx_clone);
-            ConcreteBlock::new(move |error: *mut Object| {
-                let result = if error.is_null() {
-                    log::info!("VM stopped successfully");
-                    Ok(())
-                } else {
-                    let error_msg = format!("VM stop failed with error");
-                    log::error!("{}", error_msg);
-                    Err(ShimError::runtime_with_context(
-                        error_msg,
-                        "VM may not have stopped cleanly"
-                    ))
-                };
-
-                if let Ok(mut sender) = tx_inner.lock() {
-                    if let Some(s) = sender.take() {
-                        let _ = s.send(result);
-                    }
-                }
-            })
-        };
-        // Convert to RcBlock for Objective-C
-        let completion_block = unsafe { RcBlock::copy(completion_block.as_ref() as *const _ as *const Block<(*mut Object,), ()>) };
-
-        // Stop the VM with completion handler
-        unsafe {
-            let _: () = msg_send![vm_instance, stopWithCompletionHandler: &*completion_block];
-        }
-
-        // Wait for completion (with timeout) - convert to async
-        tokio::task::spawn_blocking(move || rx.recv())
-            .await
-            .map_err(|_| ShimError::runtime("Failed to wait for VM stop"))?
-            .map_err(|_| ShimError::runtime("Channel closed before VM stop completed"))?
-    }
-    
+    #[allow(dead_code)]
     pub fn wait_until_ready(&self, timeout_secs: u64) -> Result<()> {
-        // Wait for VM to be ready (booted and agent running)
         use std::time::{Duration, Instant};
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
-        
+
         while start.elapsed() < timeout {
-            // Try to connect via vsock
             use super::rpc::RpcClient;
             if RpcClient::connect_vsock(self.get_vsock_port()).is_ok() {
                 return Ok(());
             }
-            
+
             std::thread::sleep(Duration::from_millis(100));
         }
-        
+
         Err(ShimError::runtime_with_context(
             "VM did not become ready within the timeout period",
-            format!("Timeout: {} seconds. Check VM logs and ensure agent is running.", timeout_secs)
+            format!(
+                "Timeout: {} seconds. Check VM logs and ensure agent is running.",
+                timeout_secs
+            ),
         ))
     }
 }
@@ -421,17 +394,12 @@ impl VirtualMachine {
 impl Drop for VirtualMachine {
     fn drop(&mut self) {
         if self.is_running {
-            // Note: We can't use async in Drop, so we'll just release the instance
             #[cfg(target_os = "macos")]
             {
-                if let Some(vm_instance) = self.vm_instance {
+                if let Some(bridge_handle) = self.vm_bridge_handle.take() {
+                    log::info!("Cleaning up VM bridge on drop");
                     unsafe {
-                        let _: () = msg_send![vm_instance, release];
-                    }
-                }
-                if let Some(vsock_device) = self.vsock_device {
-                    unsafe {
-                        let _: () = msg_send![vsock_device, release];
+                        vm_bridge_destroy(bridge_handle);
                     }
                 }
             }

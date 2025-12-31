@@ -1,3 +1,4 @@
+use crate::types::RuntimeConfig;
 use crate::*;
 use libcrun_shim_proto::*;
 use std::io::{Read, Write};
@@ -8,37 +9,47 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
+    /// Connect with default configuration (from environment)
     pub fn connect() -> Result<Self> {
-        // Try vsock first (for VM communication)
-        // Fallback to Unix socket for development/testing
-        let vsock_client = VsockClient::new(1234); // Default vsock port
-        
+        Self::connect_with_config(&RuntimeConfig::from_env())
+    }
+
+    /// Connect with custom configuration
+    pub fn connect_with_config(config: &RuntimeConfig) -> Result<Self> {
+        let vsock_client = VsockClient::with_config(config);
+
         match vsock_client.connect() {
-            Ok(stream) => Ok(Self { stream }),
-            Err(_) => {
-                // Fallback to Unix socket
-                use std::os::unix::net::UnixStream;
-                let unix_stream = UnixStream::connect("/tmp/libcrun-shim.sock")
-                    .map_err(|e| ShimError::runtime_with_context(
-                        format!("Failed to connect to Unix socket: {}", e),
-                        "Make sure the agent is running and listening on /tmp/libcrun-shim.sock"
-                    ))?;
-                Ok(Self {
-                    stream: VsockStream::Unix(unix_stream),
-                })
+            Ok(stream) => {
+                log::info!("RPC connection established (port: {}, socket: {})",
+                    config.vsock_port, config.socket_path.display());
+                Ok(Self { stream })
+            }
+            Err(e) => {
+                log::error!("Failed to establish RPC connection: {}", e);
+                Err(e)
             }
         }
     }
-    
-    pub fn connect_vsock(port: u32) -> Result<Self> {
-        let vsock_client = VsockClient::new(port);
+
+    /// Connect with a VM bridge handle for native vsock
+    #[cfg(target_os = "macos")]
+    pub fn connect_with_vm_bridge(config: &RuntimeConfig, vm_bridge_handle: *mut std::os::raw::c_void) -> Result<Self> {
+        let vsock_client = VsockClient::with_vm_bridge(config, vm_bridge_handle);
         let stream = vsock_client.connect()?;
+        log::info!("RPC connection established via VM bridge (port: {})", config.vsock_port);
         Ok(Self { stream })
     }
-    
+
+    /// Connect via vsock with specified port (legacy method for compatibility)
+    pub fn connect_vsock(port: u32) -> Result<Self> {
+        let mut config = RuntimeConfig::from_env();
+        config.vsock_port = port;
+        Self::connect_with_config(&config)
+    }
+
     /// Create an RPC client from an existing stream
-    pub fn from_stream(stream: VsockStream) -> Result<Self> {
-        Ok(Self { stream })
+    pub fn from_stream(stream: VsockStream) -> Self {
+        Self { stream }
     }
     
     pub fn call(&mut self, request: Request) -> Result<Response> {
