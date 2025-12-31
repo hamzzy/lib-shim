@@ -602,5 +602,223 @@ impl RuntimeImpl for LinuxRuntime {
         let containers = self.containers.read().unwrap();
         Ok(containers.values().map(|state| state.info.clone()).collect())
     }
+
+    async fn metrics(&self, id: &str) -> Result<ContainerMetrics> {
+        let containers = self.containers.read().unwrap();
+        let state = containers.get(id).ok_or_else(|| {
+            ShimError::not_found(format!("Container '{}' not found", id))
+        })?;
+
+        Ok(collect_container_metrics(id, state.info.pid))
+    }
+
+    async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>> {
+        let containers = self.containers.read().unwrap();
+        Ok(containers.iter()
+            .map(|(id, state)| collect_container_metrics(id, state.info.pid))
+            .collect())
+    }
+}
+
+/// Collect metrics for a container from cgroups
+fn collect_container_metrics(id: &str, pid: Option<u32>) -> ContainerMetrics {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut metrics = ContainerMetrics {
+        id: id.to_string(),
+        timestamp,
+        ..Default::default()
+    };
+
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = pid {
+        // Try cgroup v2 first, then v1
+        if let Some(cgroup_path) = find_cgroup_path(pid) {
+            metrics.cpu = read_cpu_metrics(&cgroup_path);
+            metrics.memory = read_memory_metrics(&cgroup_path);
+            metrics.blkio = read_blkio_metrics(&cgroup_path);
+            metrics.pids = read_pids_metrics(&cgroup_path);
+        }
+        // Network metrics from /proc/net
+        metrics.network = read_network_metrics(pid);
+    }
+
+    metrics
+}
+
+#[cfg(target_os = "linux")]
+fn find_cgroup_path(pid: u32) -> Option<String> {
+    let cgroup_file = format!("/proc/{}/cgroup", pid);
+    if let Ok(content) = std::fs::read_to_string(&cgroup_file) {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 3 {
+                let path = parts[2];
+                // cgroup v2
+                if parts[0] == "0" && parts[1].is_empty() {
+                    return Some(format!("/sys/fs/cgroup{}", path));
+                }
+            }
+        }
+        // Fallback for cgroup v1
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 3 && parts[1].contains("memory") {
+                return Some(format!("/sys/fs/cgroup/memory{}", parts[2]));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_cpu_metrics(cgroup_path: &str) -> CpuMetrics {
+    let mut cpu = CpuMetrics::default();
+
+    // cgroup v2: cpu.stat
+    if let Ok(content) = std::fs::read_to_string(format!("{}/cpu.stat", cgroup_path)) {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let value = parts[1].parse().unwrap_or(0);
+                match parts[0] {
+                    "usage_usec" => cpu.usage_total = value * 1000,
+                    "user_usec" => cpu.usage_user = value * 1000,
+                    "system_usec" => cpu.usage_system = value * 1000,
+                    "nr_throttled" => cpu.throttled_periods = value,
+                    "throttled_usec" => cpu.throttled_time = value * 1000,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // cgroup v1 fallback
+    if cpu.usage_total == 0 {
+        if let Ok(content) = std::fs::read_to_string(format!("{}/cpuacct.usage", cgroup_path)) {
+            cpu.usage_total = content.trim().parse().unwrap_or(0);
+        }
+    }
+
+    cpu
+}
+
+#[cfg(target_os = "linux")]
+fn read_memory_metrics(cgroup_path: &str) -> MemoryMetrics {
+    let mut mem = MemoryMetrics::default();
+
+    // cgroup v2
+    if let Ok(content) = std::fs::read_to_string(format!("{}/memory.current", cgroup_path)) {
+        mem.usage = content.trim().parse().unwrap_or(0);
+    }
+    if let Ok(content) = std::fs::read_to_string(format!("{}/memory.max", cgroup_path)) {
+        mem.limit = content.trim().parse().unwrap_or(u64::MAX);
+    }
+    if let Ok(content) = std::fs::read_to_string(format!("{}/memory.peak", cgroup_path)) {
+        mem.max_usage = content.trim().parse().unwrap_or(0);
+    }
+    if let Ok(content) = std::fs::read_to_string(format!("{}/memory.swap.current", cgroup_path)) {
+        mem.swap = content.trim().parse().unwrap_or(0);
+    }
+    if let Ok(content) = std::fs::read_to_string(format!("{}/memory.stat", cgroup_path)) {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                match parts[0] {
+                    "file" | "cache" => mem.cache = parts[1].parse().unwrap_or(0),
+                    "anon" => mem.rss = parts[1].parse().unwrap_or(0),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // cgroup v1 fallback
+    if mem.usage == 0 {
+        if let Ok(content) = std::fs::read_to_string(format!("{}/memory.usage_in_bytes", cgroup_path)) {
+            mem.usage = content.trim().parse().unwrap_or(0);
+        }
+        if let Ok(content) = std::fs::read_to_string(format!("{}/memory.limit_in_bytes", cgroup_path)) {
+            mem.limit = content.trim().parse().unwrap_or(u64::MAX);
+        }
+        if let Ok(content) = std::fs::read_to_string(format!("{}/memory.max_usage_in_bytes", cgroup_path)) {
+            mem.max_usage = content.trim().parse().unwrap_or(0);
+        }
+    }
+
+    if mem.limit > 0 && mem.limit != u64::MAX {
+        mem.usage_percent = (mem.usage as f64 / mem.limit as f64) * 100.0;
+    }
+
+    mem
+}
+
+#[cfg(target_os = "linux")]
+fn read_blkio_metrics(cgroup_path: &str) -> BlkioMetrics {
+    let mut blkio = BlkioMetrics::default();
+
+    // cgroup v2: io.stat
+    if let Ok(content) = std::fs::read_to_string(format!("{}/io.stat", cgroup_path)) {
+        for line in content.lines() {
+            for part in line.split_whitespace() {
+                if let Some(value) = part.strip_prefix("rbytes=") {
+                    blkio.read_bytes += value.parse::<u64>().unwrap_or(0);
+                } else if let Some(value) = part.strip_prefix("wbytes=") {
+                    blkio.write_bytes += value.parse::<u64>().unwrap_or(0);
+                } else if let Some(value) = part.strip_prefix("rios=") {
+                    blkio.read_ops += value.parse::<u64>().unwrap_or(0);
+                } else if let Some(value) = part.strip_prefix("wios=") {
+                    blkio.write_ops += value.parse::<u64>().unwrap_or(0);
+                }
+            }
+        }
+    }
+
+    blkio
+}
+
+#[cfg(target_os = "linux")]
+fn read_pids_metrics(cgroup_path: &str) -> PidsMetrics {
+    let mut pids = PidsMetrics::default();
+
+    if let Ok(content) = std::fs::read_to_string(format!("{}/pids.current", cgroup_path)) {
+        pids.current = content.trim().parse().unwrap_or(0);
+    }
+    if let Ok(content) = std::fs::read_to_string(format!("{}/pids.max", cgroup_path)) {
+        pids.limit = content.trim().parse().unwrap_or(0);
+    }
+
+    pids
+}
+
+#[cfg(target_os = "linux")]
+fn read_network_metrics(pid: u32) -> NetworkMetrics {
+    let mut net = NetworkMetrics::default();
+
+    let net_dev = format!("/proc/{}/net/dev", pid);
+    if let Ok(content) = std::fs::read_to_string(&net_dev) {
+        for line in content.lines().skip(2) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 10 {
+                let iface = parts[0].trim_end_matches(':');
+                if iface == "lo" {
+                    continue;
+                }
+                net.rx_bytes += parts[1].parse::<u64>().unwrap_or(0);
+                net.rx_packets += parts[2].parse::<u64>().unwrap_or(0);
+                net.rx_errors += parts[3].parse::<u64>().unwrap_or(0);
+                net.rx_dropped += parts[4].parse::<u64>().unwrap_or(0);
+                net.tx_bytes += parts[9].parse::<u64>().unwrap_or(0);
+                net.tx_packets += parts[10].parse::<u64>().unwrap_or(0);
+                net.tx_errors += parts[11].parse::<u64>().unwrap_or(0);
+                net.tx_dropped += parts[12].parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+
+    net
 }
 

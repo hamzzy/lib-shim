@@ -25,8 +25,28 @@ void vm_bridge_destroy(VMBridgeHandle handle);
 
 // VM operations
 bool vm_bridge_create_vm(VMBridgeHandle handle, const char* kernel_path, const char* initramfs_path, uint64_t memory_bytes, uint32_t cpu_count);
+
+// Full VM creation with disks and network
+bool vm_bridge_create_vm_full(
+    VMBridgeHandle handle,
+    const char* kernel_path,
+    const char* initramfs_path,
+    uint64_t memory_bytes,
+    uint32_t cpu_count,
+    const char** disk_paths,
+    const uint64_t* disk_sizes,
+    const bool* disk_read_only,
+    uint32_t disk_count,
+    const char* network_mode,
+    const char* bridge_interface
+);
+
 void vm_bridge_start_vm(VMBridgeHandle handle, VMCompletionCallback callback);
 void vm_bridge_stop_vm(VMBridgeHandle handle, VMCompletionCallback callback);
+
+// Network interface listing
+typedef void (*NetworkInterfaceCallback)(const char* interfaces);
+void vm_bridge_list_network_interfaces(NetworkInterfaceCallback callback);
 
 // VM state queries
 int32_t vm_bridge_get_state(VMBridgeHandle handle);

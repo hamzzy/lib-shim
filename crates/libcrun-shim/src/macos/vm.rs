@@ -21,6 +21,19 @@ extern "C" {
         memory_bytes: u64,
         cpu_count: u32,
     ) -> bool;
+    fn vm_bridge_create_vm_full(
+        handle: *mut c_void,
+        kernel_path: *const c_char,
+        initramfs_path: *const c_char,
+        memory_bytes: u64,
+        cpu_count: u32,
+        disk_paths: *const *const c_char,
+        disk_sizes: *const u64,
+        disk_read_only: *const bool,
+        disk_count: u32,
+        network_mode: *const c_char,
+        bridge_interface: *const c_char,
+    ) -> bool;
     fn vm_bridge_start_vm(
         handle: *mut c_void,
         callback: extern "C" fn(bool, *const c_char),
@@ -32,6 +45,9 @@ extern "C" {
     fn vm_bridge_get_state(handle: *mut c_void) -> i32;
     fn vm_bridge_can_start(handle: *mut c_void) -> bool;
     fn vm_bridge_can_stop(handle: *mut c_void) -> bool;
+    fn vm_bridge_list_network_interfaces(
+        callback: extern "C" fn(*const c_char),
+    );
 }
 
 // Global state for async completion - used by callbacks
@@ -152,19 +168,66 @@ impl VirtualMachine {
             };
 
             log::info!(
-                "Creating VM with memory={}MB, cpus={}",
+                "Creating VM with memory={}MB, cpus={}, disks={}, network={}",
                 config.vm_memory / 1024 / 1024,
-                config.vm_cpus
+                config.vm_cpus,
+                config.vm_disks.len(),
+                config.vm_network.mode
             );
 
-            let create_result = unsafe {
-                vm_bridge_create_vm(
-                    bridge_handle,
-                    kernel_cstr.as_ptr(),
-                    initramfs_cstr.as_ptr(),
-                    config.vm_memory,
-                    config.vm_cpus,
-                )
+            // Use full config if disks or custom network are configured
+            let create_result = if !config.vm_disks.is_empty() || config.vm_network.mode != "nat" {
+                // Prepare disk configurations
+                let disk_paths_cstrings: Vec<CString> = config.vm_disks.iter()
+                    .filter_map(|d| CString::new(d.path.to_string_lossy().as_ref()).ok())
+                    .collect();
+                let disk_paths_ptrs: Vec<*const c_char> = disk_paths_cstrings.iter()
+                    .map(|s| s.as_ptr())
+                    .collect();
+                let disk_sizes: Vec<u64> = config.vm_disks.iter().map(|d| d.size).collect();
+                let disk_read_only: Vec<bool> = config.vm_disks.iter().map(|d| d.read_only).collect();
+
+                // Network mode
+                let network_mode_cstr = CString::new(config.vm_network.mode.as_str()).unwrap_or_default();
+                let bridge_interface_cstr = config.vm_network.bridge_interface.as_ref()
+                    .and_then(|s| CString::new(s.as_str()).ok());
+                let bridge_ptr = bridge_interface_cstr.as_ref()
+                    .map(|s| s.as_ptr())
+                    .unwrap_or(std::ptr::null());
+
+                for disk in &config.vm_disks {
+                    log::info!("  Disk: {} ({}MB, {})",
+                        disk.path.display(),
+                        disk.size / 1024 / 1024,
+                        if disk.read_only { "ro" } else { "rw" });
+                }
+
+                unsafe {
+                    vm_bridge_create_vm_full(
+                        bridge_handle,
+                        kernel_cstr.as_ptr(),
+                        initramfs_cstr.as_ptr(),
+                        config.vm_memory,
+                        config.vm_cpus,
+                        if disk_paths_ptrs.is_empty() { std::ptr::null() } else { disk_paths_ptrs.as_ptr() },
+                        if disk_sizes.is_empty() { std::ptr::null() } else { disk_sizes.as_ptr() },
+                        if disk_read_only.is_empty() { std::ptr::null() } else { disk_read_only.as_ptr() },
+                        config.vm_disks.len() as u32,
+                        network_mode_cstr.as_ptr(),
+                        bridge_ptr,
+                    )
+                }
+            } else {
+                // Simple creation without disks/network
+                unsafe {
+                    vm_bridge_create_vm(
+                        bridge_handle,
+                        kernel_cstr.as_ptr(),
+                        initramfs_cstr.as_ptr(),
+                        config.vm_memory,
+                        config.vm_cpus,
+                    )
+                }
             };
 
             if !create_result {
@@ -173,8 +236,8 @@ impl VirtualMachine {
                 return Self::start_fallback(config);
             }
 
-            log::info!("VM created successfully via Swift bridge (memory={}MB, cpus={})",
-                config.vm_memory / 1024 / 1024, config.vm_cpus);
+            log::info!("VM created successfully via Swift bridge (memory={}MB, cpus={}, disks={})",
+                config.vm_memory / 1024 / 1024, config.vm_cpus, config.vm_disks.len());
 
             // Reset completion flags
             VM_START_COMPLETE.store(false, Ordering::SeqCst);

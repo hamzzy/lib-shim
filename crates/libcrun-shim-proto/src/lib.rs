@@ -7,6 +7,10 @@ pub enum Request {
     Stop(String),
     Delete(String),
     List,
+    /// Get metrics for a specific container
+    Metrics(String),
+    /// Get metrics for all containers
+    AllMetrics,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +82,10 @@ pub enum Response {
     Stopped,
     Deleted,
     List(Vec<ContainerInfoProto>),
+    /// Metrics for a single container
+    Metrics(ContainerMetricsProto),
+    /// Metrics for all containers
+    AllMetrics(Vec<ContainerMetricsProto>),
     Error(String),
 }
 
@@ -86,6 +94,66 @@ pub struct ContainerInfoProto {
     pub id: String,
     pub status: String,
     pub pid: Option<u32>,
+}
+
+/// Container metrics for RPC
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContainerMetricsProto {
+    pub id: String,
+    pub timestamp: u64,
+    pub cpu: CpuMetricsProto,
+    pub memory: MemoryMetricsProto,
+    pub blkio: BlkioMetricsProto,
+    pub network: NetworkMetricsProto,
+    pub pids: PidsMetricsProto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CpuMetricsProto {
+    pub usage_total: u64,
+    pub usage_user: u64,
+    pub usage_system: u64,
+    pub per_cpu: Vec<u64>,
+    pub throttled_periods: u64,
+    pub throttled_time: u64,
+    pub usage_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryMetricsProto {
+    pub usage: u64,
+    pub max_usage: u64,
+    pub limit: u64,
+    pub cache: u64,
+    pub rss: u64,
+    pub swap: u64,
+    pub usage_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BlkioMetricsProto {
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub read_ops: u64,
+    pub write_ops: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NetworkMetricsProto {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub rx_errors: u64,
+    pub tx_errors: u64,
+    pub rx_dropped: u64,
+    pub tx_dropped: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PidsMetricsProto {
+    pub current: u64,
+    pub limit: u64,
 }
 
 pub fn serialize_request(req: &Request) -> Vec<u8> {

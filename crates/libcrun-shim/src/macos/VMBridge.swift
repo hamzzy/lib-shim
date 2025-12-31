@@ -6,15 +6,53 @@
 import Foundation
 import Virtualization
 
+/// Disk configuration for VM
+@available(macOS 12.0, *)
+public struct VMDiskConfig {
+    var path: String
+    var sizeBytes: UInt64
+    var readOnly: Bool
+    var createIfMissing: Bool
+}
+
+/// Network configuration for VM
+@available(macOS 12.0, *)
+public struct VMNetworkConfig {
+    var mode: String  // "nat", "bridged", "none"
+    var bridgeInterface: String?
+}
+
 /// Bridge class for handling VM operations with proper async completion handlers
 @available(macOS 12.0, *)
 @objc public class VMBridge: NSObject {
 
     private var virtualMachine: VZVirtualMachine?
     private var completionHandler: ((Bool, String?) -> Void)?
+    private var diskAttachments: [VZDiskImageStorageDeviceAttachment] = []
 
-    /// Create a Linux VM with the specified configuration
+    /// Create a Linux VM with the specified configuration (legacy method)
     @objc public func createVMWithKernelPath(_ kernelPath: String, initramfsPath: String, memoryBytes: UInt64, cpuCount: UInt32) -> Bool {
+        return createVMWithFullConfig(
+            kernelPath: kernelPath,
+            initramfsPath: initramfsPath,
+            memoryBytes: memoryBytes,
+            cpuCount: cpuCount,
+            disks: [],
+            networkMode: "nat",
+            bridgeInterface: nil
+        )
+    }
+
+    /// Create a Linux VM with full configuration including disks and network
+    public func createVMWithFullConfig(
+        kernelPath: String,
+        initramfsPath: String,
+        memoryBytes: UInt64,
+        cpuCount: UInt32,
+        disks: [VMDiskConfig],
+        networkMode: String,
+        bridgeInterface: String?
+    ) -> Bool {
         do {
             // Create boot loader
             let bootLoader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: kernelPath))
@@ -40,6 +78,22 @@ import Virtualization
 
             print("VM configuration: memory=\(actualMemory / 1024 / 1024)MB, cpus=\(actualCpus)")
 
+            // Configure storage devices
+            var storageDevices: [VZStorageDeviceConfiguration] = []
+            for diskConfig in disks {
+                if let diskDevice = createDiskDevice(config: diskConfig) {
+                    storageDevices.append(diskDevice)
+                    print("Added disk: \(diskConfig.path)")
+                }
+            }
+            config.storageDevices = storageDevices
+
+            // Configure network
+            if let networkDevice = createNetworkDevice(mode: networkMode, bridgeInterface: bridgeInterface) {
+                config.networkDevices = [networkDevice]
+                print("Network configured: mode=\(networkMode)")
+            }
+
             // Validate configuration
             try config.validate()
 
@@ -52,6 +106,101 @@ import Virtualization
         } catch {
             print("Failed to create VM: \(error)")
             return false
+        }
+    }
+
+    /// Create a disk device from configuration
+    private func createDiskDevice(config: VMDiskConfig) -> VZVirtioBlockDeviceConfiguration? {
+        let diskURL = URL(fileURLWithPath: config.path)
+        let fileManager = FileManager.default
+
+        // Create disk if missing and requested
+        if config.createIfMissing && !fileManager.fileExists(atPath: config.path) {
+            do {
+                try createRawDiskImage(at: diskURL, sizeBytes: config.sizeBytes)
+                print("Created disk image: \(config.path) (\(config.sizeBytes / 1024 / 1024)MB)")
+            } catch {
+                print("Failed to create disk image: \(error)")
+                return nil
+            }
+        }
+
+        // Attach disk
+        do {
+            let attachment = try VZDiskImageStorageDeviceAttachment(
+                url: diskURL,
+                readOnly: config.readOnly
+            )
+            diskAttachments.append(attachment)
+            return VZVirtioBlockDeviceConfiguration(attachment: attachment)
+        } catch {
+            print("Failed to attach disk \(config.path): \(error)")
+            return nil
+        }
+    }
+
+    /// Create a raw disk image file
+    private func createRawDiskImage(at url: URL, sizeBytes: UInt64) throws {
+        let fileManager = FileManager.default
+
+        // Create parent directory if needed
+        let parentDir = url.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: parentDir.path) {
+            try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+
+        // Create sparse file
+        fileManager.createFile(atPath: url.path, contents: nil, attributes: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: sizeBytes)
+        try handle.close()
+    }
+
+    /// Create a network device from configuration
+    private func createNetworkDevice(mode: String, bridgeInterface: String?) -> VZNetworkDeviceConfiguration? {
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+
+        switch mode.lowercased() {
+        case "nat":
+            // NAT networking using macOS's built-in NAT
+            networkDevice.attachment = VZNATNetworkDeviceAttachment()
+            return networkDevice
+
+        case "bridged":
+            // Bridged networking
+            if let interfaceName = bridgeInterface {
+                // Find the bridge interface
+                let interfaces = VZBridgedNetworkInterface.networkInterfaces
+                if let bridgeIface = interfaces.first(where: { $0.identifier == interfaceName }) {
+                    networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: bridgeIface)
+                    return networkDevice
+                } else {
+                    print("Bridge interface '\(interfaceName)' not found. Available: \(interfaces.map { $0.identifier })")
+                    // Fall back to first available
+                    if let firstIface = interfaces.first {
+                        print("Using first available interface: \(firstIface.identifier)")
+                        networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: firstIface)
+                        return networkDevice
+                    }
+                }
+            } else {
+                // Use first available interface
+                if let firstIface = VZBridgedNetworkInterface.networkInterfaces.first {
+                    networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: firstIface)
+                    return networkDevice
+                }
+            }
+            print("No bridge interface available, falling back to NAT")
+            networkDevice.attachment = VZNATNetworkDeviceAttachment()
+            return networkDevice
+
+        case "none":
+            return nil
+
+        default:
+            print("Unknown network mode '\(mode)', using NAT")
+            networkDevice.attachment = VZNATNetworkDeviceAttachment()
+            return networkDevice
         }
     }
 
@@ -198,7 +347,7 @@ public func vm_bridge_destroy(_ handle: UnsafeMutableRawPointer?) {
     Unmanaged<VMBridge>.fromOpaque(handle).release()
 }
 
-/// Create VM with paths and resource configuration
+/// Create VM with paths and resource configuration (legacy)
 @available(macOS 12.0, *)
 @_cdecl("vm_bridge_create_vm")
 public func vm_bridge_create_vm(_ handle: UnsafeMutableRawPointer?, _ kernelPath: UnsafePointer<CChar>, _ initramfsPath: UnsafePointer<CChar>, _ memoryBytes: UInt64, _ cpuCount: UInt32) -> Bool {
@@ -209,6 +358,70 @@ public func vm_bridge_create_vm(_ handle: UnsafeMutableRawPointer?, _ kernelPath
     let initramfs = String(cString: initramfsPath)
 
     return bridge.createVMWithKernelPath(kernel, initramfsPath: initramfs, memoryBytes: memoryBytes, cpuCount: cpuCount)
+}
+
+/// Create VM with full configuration including disks and network
+/// diskPaths, diskSizes, diskReadOnly are parallel arrays
+/// networkMode: "nat", "bridged", "none"
+@available(macOS 12.0, *)
+@_cdecl("vm_bridge_create_vm_full")
+public func vm_bridge_create_vm_full(
+    _ handle: UnsafeMutableRawPointer?,
+    _ kernelPath: UnsafePointer<CChar>,
+    _ initramfsPath: UnsafePointer<CChar>,
+    _ memoryBytes: UInt64,
+    _ cpuCount: UInt32,
+    _ diskPaths: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ diskSizes: UnsafePointer<UInt64>?,
+    _ diskReadOnly: UnsafePointer<Bool>?,
+    _ diskCount: UInt32,
+    _ networkMode: UnsafePointer<CChar>,
+    _ bridgeInterface: UnsafePointer<CChar>?
+) -> Bool {
+    guard let handle = handle else { return false }
+    let bridge = Unmanaged<VMBridge>.fromOpaque(handle).takeUnretainedValue()
+
+    let kernel = String(cString: kernelPath)
+    let initramfs = String(cString: initramfsPath)
+    let netMode = String(cString: networkMode)
+    let bridgeIface = bridgeInterface.map { String(cString: $0) }
+
+    // Parse disk configurations
+    var disks: [VMDiskConfig] = []
+    if diskCount > 0, let paths = diskPaths, let sizes = diskSizes, let readOnlys = diskReadOnly {
+        for i in 0..<Int(diskCount) {
+            if let pathPtr = paths[i] {
+                let path = String(cString: pathPtr)
+                let size = sizes[i]
+                let ro = readOnlys[i]
+                disks.append(VMDiskConfig(
+                    path: path,
+                    sizeBytes: size,
+                    readOnly: ro,
+                    createIfMissing: true
+                ))
+            }
+        }
+    }
+
+    return bridge.createVMWithFullConfig(
+        kernelPath: kernel,
+        initramfsPath: initramfs,
+        memoryBytes: memoryBytes,
+        cpuCount: cpuCount,
+        disks: disks,
+        networkMode: netMode,
+        bridgeInterface: bridgeIface
+    )
+}
+
+/// Get list of available network interfaces for bridged mode
+@available(macOS 12.0, *)
+@_cdecl("vm_bridge_list_network_interfaces")
+public func vm_bridge_list_network_interfaces(_ callback: @escaping @convention(c) (UnsafePointer<CChar>?) -> Void) {
+    let interfaces = VZBridgedNetworkInterface.networkInterfaces
+    let names = interfaces.map { $0.identifier }.joined(separator: ",")
+    callback(names.cString(using: .utf8))
 }
 
 /// Start VM with completion callback

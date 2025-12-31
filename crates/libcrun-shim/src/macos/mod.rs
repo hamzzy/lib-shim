@@ -180,5 +180,69 @@ impl RuntimeImpl for MacOsRuntime {
             _ => Err(ShimError::runtime("Unexpected response type from RPC list request")),
         }
     }
+
+    async fn metrics(&self, id: &str) -> Result<ContainerMetrics> {
+        let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
+        match rpc.call(Request::Metrics(id.to_string()))? {
+            Response::Metrics(m) => Ok(proto_to_metrics(m)),
+            Response::Error(e) => Err(ShimError::runtime_with_context(e, format!("RPC metrics request failed for container: {}", id))),
+            _ => Err(ShimError::runtime("Unexpected response type from RPC metrics request")),
+        }
+    }
+
+    async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>> {
+        let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;
+        match rpc.call(Request::AllMetrics)? {
+            Response::AllMetrics(list) => Ok(list.into_iter().map(proto_to_metrics).collect()),
+            Response::Error(e) => Err(ShimError::runtime_with_context(e, "RPC all_metrics request failed")),
+            _ => Err(ShimError::runtime("Unexpected response type from RPC all_metrics request")),
+        }
+    }
+}
+
+/// Convert proto metrics to local types
+fn proto_to_metrics(m: libcrun_shim_proto::ContainerMetricsProto) -> ContainerMetrics {
+    ContainerMetrics {
+        id: m.id,
+        timestamp: m.timestamp,
+        cpu: CpuMetrics {
+            usage_total: m.cpu.usage_total,
+            usage_user: m.cpu.usage_user,
+            usage_system: m.cpu.usage_system,
+            per_cpu: m.cpu.per_cpu,
+            throttled_periods: m.cpu.throttled_periods,
+            throttled_time: m.cpu.throttled_time,
+            usage_percent: m.cpu.usage_percent,
+        },
+        memory: MemoryMetrics {
+            usage: m.memory.usage,
+            max_usage: m.memory.max_usage,
+            limit: m.memory.limit,
+            cache: m.memory.cache,
+            rss: m.memory.rss,
+            swap: m.memory.swap,
+            usage_percent: m.memory.usage_percent,
+        },
+        blkio: BlkioMetrics {
+            read_bytes: m.blkio.read_bytes,
+            write_bytes: m.blkio.write_bytes,
+            read_ops: m.blkio.read_ops,
+            write_ops: m.blkio.write_ops,
+        },
+        network: NetworkMetrics {
+            rx_bytes: m.network.rx_bytes,
+            tx_bytes: m.network.tx_bytes,
+            rx_packets: m.network.rx_packets,
+            tx_packets: m.network.tx_packets,
+            rx_errors: m.network.rx_errors,
+            tx_errors: m.network.tx_errors,
+            rx_dropped: m.network.rx_dropped,
+            tx_dropped: m.network.tx_dropped,
+        },
+        pids: PidsMetrics {
+            current: m.pids.current,
+            limit: m.pids.limit,
+        },
+    }
 }
 

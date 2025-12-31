@@ -27,6 +27,102 @@ pub struct RuntimeConfig {
     /// Connection timeout in seconds
     #[serde(default = "default_connection_timeout")]
     pub connection_timeout: u64,
+
+    /// Virtual disks to attach to the VM
+    #[serde(default)]
+    pub vm_disks: Vec<VmDiskConfig>,
+
+    /// VM network configuration
+    #[serde(default)]
+    pub vm_network: VmNetworkConfig,
+}
+
+/// Virtual disk configuration for VM
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmDiskConfig {
+    /// Path to the disk image file
+    pub path: PathBuf,
+    /// Disk size in bytes (used when creating new disk)
+    pub size: u64,
+    /// Whether the disk is read-only
+    #[serde(default)]
+    pub read_only: bool,
+    /// Disk format: "raw" or "qcow2" (default: raw)
+    #[serde(default = "default_disk_format")]
+    pub format: String,
+    /// Whether to create the disk if it doesn't exist
+    #[serde(default = "default_true")]
+    pub create_if_missing: bool,
+}
+
+fn default_disk_format() -> String {
+    "raw".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for VmDiskConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            size: 10 * 1024 * 1024 * 1024, // 10GB default
+            read_only: false,
+            format: default_disk_format(),
+            create_if_missing: true,
+        }
+    }
+}
+
+/// VM network configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmNetworkConfig {
+    /// Network mode: "nat", "bridged", "none" (default: nat)
+    #[serde(default = "default_vm_network_mode")]
+    pub mode: String,
+    /// Port forwarding rules (host_port -> guest_port)
+    #[serde(default)]
+    pub port_forwards: Vec<PortForward>,
+    /// Bridge interface name (for bridged mode)
+    pub bridge_interface: Option<String>,
+}
+
+fn default_vm_network_mode() -> String {
+    "nat".to_string()
+}
+
+impl Default for VmNetworkConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_vm_network_mode(),
+            port_forwards: vec![],
+            bridge_interface: None,
+        }
+    }
+}
+
+/// Port forwarding rule for VM
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortForward {
+    /// Host port to listen on
+    pub host_port: u16,
+    /// Guest port to forward to
+    pub guest_port: u16,
+    /// Protocol: "tcp" or "udp" (default: tcp)
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+    /// Host IP to bind to (default: 127.0.0.1)
+    #[serde(default = "default_host_ip")]
+    pub host_ip: String,
+}
+
+fn default_protocol() -> String {
+    "tcp".to_string()
+}
+
+fn default_host_ip() -> String {
+    "127.0.0.1".to_string()
 }
 
 impl Default for RuntimeConfig {
@@ -38,6 +134,8 @@ impl Default for RuntimeConfig {
             vm_memory: default_vm_memory(),
             vm_cpus: default_vm_cpus(),
             connection_timeout: default_connection_timeout(),
+            vm_disks: vec![],
+            vm_network: VmNetworkConfig::default(),
         }
     }
 }
@@ -156,6 +254,8 @@ pub struct RuntimeConfigBuilder {
     vm_memory: Option<u64>,
     vm_cpus: Option<u32>,
     connection_timeout: Option<u64>,
+    vm_disks: Vec<VmDiskConfig>,
+    vm_network: Option<VmNetworkConfig>,
 }
 
 impl RuntimeConfigBuilder {
@@ -189,6 +289,47 @@ impl RuntimeConfigBuilder {
         self
     }
 
+    /// Add a virtual disk to the VM
+    pub fn add_vm_disk(mut self, disk: VmDiskConfig) -> Self {
+        self.vm_disks.push(disk);
+        self
+    }
+
+    /// Add a virtual disk by path and size
+    pub fn add_disk(mut self, path: impl Into<PathBuf>, size_bytes: u64) -> Self {
+        self.vm_disks.push(VmDiskConfig {
+            path: path.into(),
+            size: size_bytes,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Set VM network configuration
+    pub fn vm_network(mut self, network: VmNetworkConfig) -> Self {
+        self.vm_network = Some(network);
+        self
+    }
+
+    /// Add a port forward rule
+    pub fn add_port_forward(mut self, host_port: u16, guest_port: u16) -> Self {
+        let network = self.vm_network.get_or_insert_with(VmNetworkConfig::default);
+        network.port_forwards.push(PortForward {
+            host_port,
+            guest_port,
+            protocol: default_protocol(),
+            host_ip: default_host_ip(),
+        });
+        self
+    }
+
+    /// Set VM network mode
+    pub fn network_mode(mut self, mode: impl Into<String>) -> Self {
+        let network = self.vm_network.get_or_insert_with(VmNetworkConfig::default);
+        network.mode = mode.into();
+        self
+    }
+
     pub fn build(self) -> RuntimeConfig {
         RuntimeConfig {
             socket_path: self.socket_path.unwrap_or_else(default_socket_path),
@@ -197,6 +338,8 @@ impl RuntimeConfigBuilder {
             vm_memory: self.vm_memory.unwrap_or_else(default_vm_memory),
             vm_cpus: self.vm_cpus.unwrap_or_else(default_vm_cpus),
             connection_timeout: self.connection_timeout.unwrap_or_else(default_connection_timeout),
+            vm_disks: self.vm_disks,
+            vm_network: self.vm_network.unwrap_or_default(),
         }
     }
 }
@@ -342,5 +485,122 @@ pub enum ContainerStatus {
     Created,
     Running,
     Stopped,
+}
+
+/// Container resource metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContainerMetrics {
+    /// Container ID
+    pub id: String,
+    /// Timestamp when metrics were collected (Unix epoch seconds)
+    pub timestamp: u64,
+    /// CPU metrics
+    pub cpu: CpuMetrics,
+    /// Memory metrics
+    pub memory: MemoryMetrics,
+    /// Block I/O metrics
+    pub blkio: BlkioMetrics,
+    /// Network metrics
+    pub network: NetworkMetrics,
+    /// PIDs metrics
+    pub pids: PidsMetrics,
+}
+
+/// CPU usage metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CpuMetrics {
+    /// Total CPU time consumed (nanoseconds)
+    pub usage_total: u64,
+    /// CPU time consumed in user mode (nanoseconds)
+    pub usage_user: u64,
+    /// CPU time consumed in kernel mode (nanoseconds)
+    pub usage_system: u64,
+    /// Per-CPU usage (nanoseconds per CPU)
+    pub per_cpu: Vec<u64>,
+    /// Number of periods with throttling active
+    pub throttled_periods: u64,
+    /// Total time throttled (nanoseconds)
+    pub throttled_time: u64,
+    /// CPU usage percentage (0.0 - 100.0 * num_cpus)
+    pub usage_percent: f64,
+}
+
+/// Memory usage metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryMetrics {
+    /// Current memory usage (bytes)
+    pub usage: u64,
+    /// Maximum memory usage recorded (bytes)
+    pub max_usage: u64,
+    /// Memory limit (bytes)
+    pub limit: u64,
+    /// Cache memory (bytes)
+    pub cache: u64,
+    /// RSS - Resident Set Size (bytes)
+    pub rss: u64,
+    /// Swap usage (bytes)
+    pub swap: u64,
+    /// Memory usage percentage (0.0 - 100.0)
+    pub usage_percent: f64,
+}
+
+/// Block I/O metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BlkioMetrics {
+    /// Bytes read from block devices
+    pub read_bytes: u64,
+    /// Bytes written to block devices
+    pub write_bytes: u64,
+    /// Number of read operations
+    pub read_ops: u64,
+    /// Number of write operations
+    pub write_ops: u64,
+}
+
+/// Network I/O metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NetworkMetrics {
+    /// Bytes received
+    pub rx_bytes: u64,
+    /// Bytes transmitted
+    pub tx_bytes: u64,
+    /// Packets received
+    pub rx_packets: u64,
+    /// Packets transmitted
+    pub tx_packets: u64,
+    /// Receive errors
+    pub rx_errors: u64,
+    /// Transmit errors
+    pub tx_errors: u64,
+    /// Receive drops
+    pub rx_dropped: u64,
+    /// Transmit drops
+    pub tx_dropped: u64,
+}
+
+/// PIDs metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PidsMetrics {
+    /// Current number of processes/threads
+    pub current: u64,
+    /// Maximum allowed (0 = unlimited)
+    pub limit: u64,
+}
+
+/// VM-level metrics (macOS)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VmMetrics {
+    /// VM state (running, stopped, etc.)
+    pub state: String,
+    /// VM uptime in seconds
+    pub uptime_secs: u64,
+    /// VM memory usage (bytes)
+    pub memory_usage: u64,
+    /// VM memory allocated (bytes)
+    pub memory_allocated: u64,
+    /// VM CPU usage percentage
+    pub cpu_percent: f64,
+    /// Number of containers running in VM
+    pub container_count: u32,
 }
 

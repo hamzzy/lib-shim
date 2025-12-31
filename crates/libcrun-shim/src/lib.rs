@@ -65,6 +65,16 @@ impl ContainerRuntime {
     pub async fn list(&self) -> Result<Vec<ContainerInfo>> {
         self.inner.list().await
     }
+
+    /// Get metrics for a specific container
+    pub async fn metrics(&self, id: &str) -> Result<ContainerMetrics> {
+        self.inner.metrics(id).await
+    }
+
+    /// Get metrics for all containers
+    pub async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>> {
+        self.inner.all_metrics().await
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -74,6 +84,8 @@ trait RuntimeImpl {
     async fn stop(&self, id: &str) -> Result<()>;
     async fn delete(&self, id: &str) -> Result<()>;
     async fn list(&self) -> Result<Vec<ContainerInfo>>;
+    async fn metrics(&self, id: &str) -> Result<ContainerMetrics>;
+    async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>>;
 }
 
 #[cfg(target_os = "macos")]
@@ -83,6 +95,8 @@ trait RuntimeImpl {
     async fn stop(&self, id: &str) -> Result<()>;
     async fn delete(&self, id: &str) -> Result<()>;
     async fn list(&self) -> Result<Vec<ContainerInfo>>;
+    async fn metrics(&self, id: &str) -> Result<ContainerMetrics>;
+    async fn all_metrics(&self) -> Result<Vec<ContainerMetrics>>;
 }
 
 #[cfg(test)]
