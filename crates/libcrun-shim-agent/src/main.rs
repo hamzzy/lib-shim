@@ -1367,7 +1367,8 @@ fn collect_container_metrics(id: &str, pid: Option<u32>) -> ContainerMetricsProt
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let metrics = ContainerMetricsProto {
+    #[allow(unused_mut)]
+    let mut metrics = ContainerMetricsProto {
         id: id.to_string(),
         timestamp,
         ..Default::default()
