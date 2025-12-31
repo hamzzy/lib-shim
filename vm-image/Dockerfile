@@ -136,9 +136,13 @@ CONFIG_HW_CONSOLE=y
 CONFIG_UNIX98_PTYS=y
 CONFIG_LEGACY_PTYS=n
 
-# Serial console (for VM)
+# Serial console (for VM - x86)
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
+
+# Serial console (for VM - ARM64/Apple Silicon)
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
 
 # Initramfs support
 CONFIG_BLK_DEV_INITRD=y
@@ -162,8 +166,14 @@ RUN make tinyconfig && \
     cat /tmp/miniconfig >> .config && \
     make olddefconfig
 
-# Build kernel
-RUN make -j$(nproc) bzImage
+# Build kernel - use appropriate target for architecture
+# For x86_64: bzImage, for arm64: Image
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        make -j$(nproc) Image; \
+    else \
+        make -j$(nproc) bzImage; \
+    fi
 
 # ============================================================
 # Stage 2: Build libcrun
@@ -193,12 +203,12 @@ RUN git clone --depth 1 https://github.com/containers/crun.git && \
     ./autogen.sh && \
     ./configure --enable-static --disable-systemd && \
     make -j$(nproc) && \
-    strip src/crun
+    strip crun
 
 # ============================================================
 # Stage 3: Build agent (cross-compiled from Rust)
 # ============================================================
-FROM rust:1.75-alpine AS agent-builder
+FROM rust:1.85-alpine AS agent-builder
 
 RUN apk add --no-cache musl-dev
 
@@ -252,7 +262,7 @@ RUN cp /bin/busybox bin/busybox && \
     done
 
 # Copy libcrun from builder
-COPY --from=libcrun-builder /build/crun/src/crun bin/crun
+COPY --from=libcrun-builder /build/crun/crun bin/crun
 RUN chmod +x bin/crun
 
 # Copy agent from builder
@@ -324,15 +334,22 @@ FROM alpine:3.19 AS output
 
 RUN mkdir /output
 
-# Copy kernel
-COPY --from=kernel-builder /build/linux/arch/x86_64/boot/bzImage /output/kernel
+# Copy kernel - handle different architectures
+# Try ARM64 first (common for Apple Silicon), fallback to x86_64
+COPY --from=kernel-builder /build/linux/arch/ /tmp/kernel-arch/
+RUN if [ -f /tmp/kernel-arch/arm64/boot/Image ]; then \
+        cp /tmp/kernel-arch/arm64/boot/Image /output/kernel; \
+    elif [ -f /tmp/kernel-arch/x86/boot/bzImage ]; then \
+        cp /tmp/kernel-arch/x86/boot/bzImage /output/kernel; \
+    elif [ -f /tmp/kernel-arch/x86_64/boot/bzImage ]; then \
+        cp /tmp/kernel-arch/x86_64/boot/bzImage /output/kernel; \
+    else \
+        echo "No kernel found!" && find /tmp/kernel-arch -name '*Image*' -o -name 'bzImage' && exit 1; \
+    fi && \
+    rm -rf /tmp/kernel-arch
 
 # Copy initramfs
 COPY --from=initramfs-builder /initramfs.img /output/initramfs.img
-
-# Also provide ARM64 instructions
-RUN echo 'For ARM64 (Apple Silicon), rebuild kernel with:' > /output/README.txt && \
-    echo 'ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- make' >> /output/README.txt
 
 # Show output
 RUN ls -la /output/

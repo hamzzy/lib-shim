@@ -213,16 +213,19 @@ public struct VMNetworkConfig {
 
         completionHandler = completion
 
-        vm.start { result in
-            switch result {
-            case .success:
-                print("VM started successfully")
-                self.completionHandler?(true, nil)
-            case .failure(let error):
-                print("VM failed to start: \(error)")
-                self.completionHandler?(false, error.localizedDescription)
+        // VZVirtualMachine requires main thread for start
+        DispatchQueue.main.async {
+            vm.start { result in
+                switch result {
+                case .success:
+                    print("VM started successfully")
+                    self.completionHandler?(true, nil)
+                case .failure(let error):
+                    print("VM failed to start: \(error)")
+                    self.completionHandler?(false, error.localizedDescription)
+                }
+                self.completionHandler = nil
             }
-            self.completionHandler = nil
         }
     }
 
@@ -235,16 +238,19 @@ public struct VMNetworkConfig {
 
         completionHandler = completion
 
-        // The stop() method uses a different signature - it passes an optional error
-        vm.stop { error in
-            if let error = error {
-                print("VM failed to stop: \(error)")
-                self.completionHandler?(false, error.localizedDescription)
-            } else {
-                print("VM stopped successfully")
-                self.completionHandler?(true, nil)
+        // VZVirtualMachine requires main thread for stop
+        DispatchQueue.main.async {
+            // The stop() method uses a different signature - it passes an optional error
+            vm.stop { error in
+                if let error = error {
+                    print("VM failed to stop: \(error)")
+                    self.completionHandler?(false, error.localizedDescription)
+                } else {
+                    print("VM stopped successfully")
+                    self.completionHandler?(true, nil)
+                }
+                self.completionHandler = nil
             }
-            self.completionHandler = nil
         }
     }
 
@@ -314,16 +320,19 @@ public struct VMNetworkConfig {
             return
         }
 
-        vsockDevice.connect(toPort: port) { result in
-            switch result {
-            case .success(let connection):
-                // Get the file descriptor from the connection
-                let fd = connection.fileDescriptor
-                print("Vsock connection established, fd: \(fd)")
-                completion(fd, nil)
-            case .failure(let error):
-                print("Vsock connection failed: \(error)")
-                completion(-1, error.localizedDescription)
+        // VZVirtioSocketDevice requires main thread
+        DispatchQueue.main.async {
+            vsockDevice.connect(toPort: port) { result in
+                switch result {
+                case .success(let connection):
+                    // Get the file descriptor from the connection
+                    let fd = connection.fileDescriptor
+                    print("Vsock connection established, fd: \(fd)")
+                    completion(fd, nil)
+                case .failure(let error):
+                    print("Vsock connection failed: \(error)")
+                    completion(-1, error.localizedDescription)
+                }
             }
         }
     }

@@ -70,3 +70,7 @@ path = "../../examples/health_metrics.rs"
 name = "production_setup"
 path = "../../examples/production_setup.rs"
 
+[[example]]
+name = "serverless_platform"
+path = "../../examples/serverless_platform.rs"
+
