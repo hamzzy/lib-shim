@@ -1,4 +1,9 @@
+#[cfg(target_os = "linux")]
 use libcrun_shim::{ContainerConfig, ContainerRuntime, ContainerStatus};
+#[cfg(target_os = "macos")]
+use libcrun_shim_proto::{
+    CreateRequest, NetworkConfigProto, Request, ResourceLimitsProto, Response, StdioConfigProto,
+};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
 use std::thread;
