@@ -14,10 +14,43 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install libcrun
+    - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libcrun-dev libyajl-dev libseccomp-dev libcap-dev pkg-config
+        sudo apt-get install -y \
+          build-essential \
+          curl \
+          pkg-config \
+          libyajl-dev \
+          libseccomp-dev \
+          libcap-dev \
+          git \
+          ca-certificates \
+          autoconf \
+          automake \
+          libtool \
+          make \
+          python3 \
+          python3-pip \
+          libsystemd-dev
+    
+    - name: Build and install crun (provides libcrun)
+      run: |
+        cd /tmp && \
+        git clone --depth 1 https://github.com/containers/crun.git && \
+        cd crun && \
+        ./autogen.sh && \
+        ./configure --enable-shared --prefix=/usr/local && \
+        make -j$(nproc) && \
+        sudo make install && \
+        sudo ldconfig && \
+        cd / && \
+        rm -rf /tmp/crun
+        
+    - name: Set PKG_CONFIG_PATH
+      run: |
+        echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH}" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable

@@ -5,7 +5,12 @@ use libcrun_shim::{
     ImageStore, LogOptions, PullProgress, RuntimeConfig, subscribe_events,
 };
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tabled::{Table, Tabled};
+
+/// Global shutdown flag for coordinating graceful termination
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
 #[command(name = "crun-shim")]
@@ -212,6 +217,46 @@ enum Commands {
         #[arg(long)]
         since: Option<u64>,
     },
+
+    /// Remove stopped containers
+    Prune {
+        /// Force prune without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Gracefully shutdown all containers and runtime
+    Shutdown {
+        /// Timeout in seconds for graceful shutdown
+        #[arg(short, long, default_value = "30")]
+        timeout: u64,
+    },
+    
+    /// Cleanup orphaned or stopped containers
+    Cleanup {
+        /// Only cleanup orphaned containers (crashed/lost PID)
+        #[arg(long)]
+        orphaned: bool,
+        
+        /// Cleanup all stopped containers
+        #[arg(long)]
+        stopped: bool,
+        
+        /// Force cleanup without confirmation
+        #[arg(short, long)]
+        force: bool,
+        
+        /// Dry run - show what would be cleaned up
+        #[arg(long)]
+        dry_run: bool,
+    },
+    
+    /// Recover runtime state from persisted data
+    Recover {
+        /// Force recovery even if runtime appears healthy
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Tabled)]
@@ -258,6 +303,9 @@ struct ImageRow {
 
 #[tokio::main]
 async fn main() {
+    // Setup panic handler for graceful cleanup on panics
+    setup_panic_handler();
+    
     let cli = Cli::parse();
 
     // Setup logging
@@ -266,6 +314,9 @@ async fn main() {
     } else {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     }
+    
+    // Setup Ctrl+C handler
+    setup_signal_handler();
 
     // Handle commands that don't need runtime
     match &cli.command {
@@ -800,6 +851,239 @@ async fn main() {
 
             Ok(())
         }
+
+        Commands::Prune { force } => {
+            if !force {
+                println!(
+                    "{}",
+                    "This will remove all stopped containers. Continue? [y/N] ".yellow()
+                );
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).ok();
+                if !input.trim().to_lowercase().starts_with('y') {
+                    println!("Aborted.");
+                    return;
+                }
+            }
+
+            match runtime.cleanup_stopped().await {
+                Ok(count) => {
+                    println!("{}: Removed {} stopped container(s)", "Prune".green().bold(), count);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+
+        Commands::Shutdown { timeout } => {
+            println!("{}", "Initiating graceful shutdown...".yellow());
+            println!("Timeout: {} seconds", timeout);
+
+            // Setup a timeout for the shutdown
+            let shutdown_future = runtime.shutdown();
+            let timeout_duration = std::time::Duration::from_secs(timeout);
+
+            match tokio::time::timeout(timeout_duration, shutdown_future).await {
+                Ok(Ok(())) => {
+                    println!("{}", "All containers stopped successfully".green());
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    eprintln!("{}: Shutdown error: {}", "Error".red().bold(), e);
+                    Err(e)
+                }
+                Err(_) => {
+                    eprintln!("{}: Shutdown timed out after {} seconds", "Warning".yellow(), timeout);
+                    eprintln!("Some containers may still be running");
+                    Ok(())
+                }
+            }
+        }
+        
+        Commands::Cleanup { orphaned, stopped, force, dry_run } => {
+            println!("{}", "Container Cleanup".bold());
+            
+            let containers = match runtime.list().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}: Failed to list containers: {}", "Error".red().bold(), e);
+                    return;
+                }
+            };
+            
+            let mut to_clean: Vec<_> = Vec::new();
+            
+            for container in &containers {
+                let should_clean = if orphaned {
+                    // Check if container is orphaned (has PID but process doesn't exist)
+                    is_container_orphaned(&container.id).await
+                } else if stopped {
+                    container.status == ContainerStatus::Stopped
+                } else {
+                    // Default: clean both orphaned and stopped
+                    container.status == ContainerStatus::Stopped ||
+                    is_container_orphaned(&container.id).await
+                };
+                
+                if should_clean {
+                    to_clean.push(container.clone());
+                }
+            }
+            
+            if to_clean.is_empty() {
+                println!("{}", "No containers to clean up".green());
+                return;
+            }
+            
+            println!("Found {} container(s) to clean up:", to_clean.len());
+            for container in &to_clean {
+                println!("  {} ({})", container.id, format_status(container.status.clone()));
+            }
+            
+            if dry_run {
+                println!();
+                println!("{}", "(dry run - no changes made)".dimmed());
+                return;
+            }
+            
+            if !force {
+                println!();
+                println!("Run with --force to proceed with cleanup");
+                return;
+            }
+            
+            let mut cleaned = 0;
+            let mut failed = 0;
+            
+            for container in &to_clean {
+                print!("Cleaning up {}... ", container.id);
+                match runtime.force_delete(&container.id).await {
+                    Ok(()) => {
+                        println!("{}", "done".green());
+                        cleaned += 1;
+                    }
+                    Err(e) => {
+                        println!("{}: {}", "failed".red(), e);
+                        failed += 1;
+                    }
+                }
+            }
+            
+            println!();
+            println!("Cleaned: {}, Failed: {}", 
+                cleaned.to_string().green(), 
+                if failed > 0 { failed.to_string().red() } else { failed.to_string().normal() });
+            
+            if failed > 0 {
+                Err(libcrun_shim::ShimError::runtime(format!("{} containers failed to clean up", failed)))
+            } else {
+                Ok(())
+            }
+        }
+        
+        Commands::Recover { force } => {
+            println!("{}", "Runtime State Recovery".bold());
+            
+            // Check if state file exists
+            let state_path = std::path::Path::new("/var/run/libcrun-shim/containers.json");
+            
+            if !state_path.exists() {
+                println!("{}", "No persisted state found - nothing to recover".yellow());
+                return;
+            }
+            
+            // Try to read persisted state
+            let content = match std::fs::read_to_string(state_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}: Failed to read state file: {}", "Error".red().bold(), e);
+                    return;
+                }
+            };
+            
+            let persisted: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{}: Failed to parse state file: {}", "Error".red().bold(), e);
+                    return;
+                }
+            };
+            
+            println!("Found {} persisted container(s)", persisted.len());
+            
+            let current_containers = match runtime.list().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}: Failed to list current containers: {}", "Error".red().bold(), e);
+                    return;
+                }
+            };
+            
+            let current_ids: std::collections::HashSet<_> = current_containers.iter()
+                .map(|c| c.id.as_str())
+                .collect();
+            
+            let mut recovered = 0;
+            let mut orphaned = 0;
+            
+            for container in &persisted {
+                let id = match container.get("id").and_then(|s| s.as_str()) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                
+                let status = container.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+                
+                if current_ids.contains(id) {
+                    println!("  {} - already tracked", id);
+                    continue;
+                }
+                
+                // Check if process is still running
+                let pid = container.get("pid").and_then(|p| p.as_i64());
+                let is_running = if let Some(pid) = pid {
+                    if pid > 0 {
+                        unsafe { libc::kill(pid as i32, 0) == 0 }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                
+                if is_running {
+                    println!("  {} - {} (PID {})", id, "orphaned process found".yellow(), pid.unwrap());
+                    orphaned += 1;
+                    
+                    if force {
+                        // Kill the orphaned process
+                        if let Some(pid) = pid {
+                            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                            println!("    Sent SIGTERM to PID {}", pid);
+                        }
+                    }
+                } else {
+                    println!("  {} - {} (was {})", id, "stale entry".dimmed(), status);
+                    recovered += 1;
+                }
+            }
+            
+            println!();
+            if orphaned > 0 {
+                println!("{}: {} orphaned process(es) found", "Warning".yellow(), orphaned);
+                if !force {
+                    println!("Run with --force to terminate orphaned processes");
+                }
+            }
+            
+            if recovered > 0 || orphaned > 0 {
+                println!("Recovery complete: {} stale entries, {} orphaned processes", recovered, orphaned);
+            } else {
+                println!("{}", "State is consistent - nothing to recover".green());
+            }
+            
+            Ok(())
+        }
     };
 
     if let Err(e) = result {
@@ -890,5 +1174,175 @@ fn format_event_type(event_type: &ContainerEventType) -> colored::ColoredString 
         ContainerEventType::ExecStart => "exec_start".blue(),
         ContainerEventType::ExecDie => "exec_die".blue(),
     }
+}
+
+/// Setup Ctrl+C (SIGINT) and SIGTERM handler for graceful shutdown
+fn setup_signal_handler() {
+    let shutdown_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let shutdown_count_clone = Arc::clone(&shutdown_count);
+    
+    ctrlc::set_handler(move || {
+        let count = shutdown_count_clone.fetch_add(1, Ordering::SeqCst);
+        
+        if count == 0 {
+            eprintln!("\n{}", "Received interrupt, initiating graceful shutdown...".yellow());
+            eprintln!("{}", "Press Ctrl+C again to force exit".dimmed());
+            SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+            
+            // Spawn cleanup in background
+            std::thread::spawn(|| {
+                // Give some time for graceful shutdown
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+                    eprintln!("{}", "Shutdown timeout, forcing exit...".red());
+                    std::process::exit(1);
+                }
+            });
+        } else if count == 1 {
+            eprintln!("\n{}", "Force shutdown requested, exiting immediately...".red().bold());
+            std::process::exit(130); // 128 + SIGINT(2)
+        } else {
+            std::process::exit(130);
+        }
+    }).expect("Failed to set Ctrl+C handler");
+}
+
+/// Setup panic handler for graceful cleanup on panics
+fn setup_panic_handler() {
+    let default_hook = std::panic::take_hook();
+    
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Log the panic
+        eprintln!("\n{}", "=".repeat(60).red());
+        eprintln!("{}", "PANIC: Runtime encountered an unexpected error".red().bold());
+        eprintln!("{}", "=".repeat(60).red());
+        
+        // Get panic location
+        if let Some(location) = panic_info.location() {
+            eprintln!("Location: {}:{}:{}", 
+                location.file(), 
+                location.line(), 
+                location.column());
+        }
+        
+        // Get panic message
+        if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Message: {}", message);
+        } else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
+            eprintln!("Message: {}", message);
+        }
+        
+        eprintln!();
+        eprintln!("{}", "Attempting to cleanup containers...".yellow());
+        
+        // Attempt emergency cleanup
+        if let Err(e) = emergency_cleanup() {
+            eprintln!("{}: Failed to cleanup: {}", "Warning".yellow(), e);
+        } else {
+            eprintln!("{}", "Cleanup completed".green());
+        }
+        
+        eprintln!();
+        eprintln!("{}", "If containers remain orphaned, run:".dimmed());
+        eprintln!("  crun-shim cleanup --orphaned");
+        eprintln!("{}", "=".repeat(60).red());
+        
+        // Call the default panic handler
+        default_hook(panic_info);
+    }));
+}
+
+/// Emergency cleanup function called during panic or forced shutdown
+fn emergency_cleanup() -> Result<(), String> {
+    // Try to read the container state file and stop any running containers
+    let state_path = std::path::Path::new("/var/run/libcrun-shim/containers.json");
+    
+    if !state_path.exists() {
+        return Ok(());
+    }
+    
+    let content = std::fs::read_to_string(state_path)
+        .map_err(|e| format!("Failed to read state file: {}", e))?;
+    
+    let containers: Vec<serde_json::Value> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse state file: {}", e))?;
+    
+    let mut cleaned = 0;
+    for container in containers {
+        if let Some(status) = container.get("status").and_then(|s| s.as_str()) {
+            if status == "Running" || status == "running" {
+                if let Some(id) = container.get("id").and_then(|s| s.as_str()) {
+                    eprintln!("  Stopping container: {}", id);
+                    // Send SIGTERM to any running container process
+                    if let Some(pid) = container.get("pid").and_then(|p| p.as_i64()) {
+                        if pid > 0 {
+                            unsafe {
+                                libc::kill(pid as i32, libc::SIGTERM);
+                            }
+                            cleaned += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if cleaned > 0 {
+        eprintln!("  Sent SIGTERM to {} containers", cleaned);
+    }
+    
+    Ok(())
+}
+
+/// Check if shutdown has been requested (for use in long-running operations)
+pub fn is_shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
+/// Check if a container is orphaned (has PID but process doesn't exist)
+async fn is_container_orphaned(container_id: &str) -> bool {
+    // Try to read container state to get PID
+    let state_path = std::path::Path::new("/var/run/libcrun-shim/containers.json");
+    
+    if !state_path.exists() {
+        return false;
+    }
+    
+    let content = match std::fs::read_to_string(state_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    
+    let containers: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    
+    for container in containers {
+        let id = match container.get("id").and_then(|s| s.as_str()) {
+            Some(id) => id,
+            None => continue,
+        };
+        
+        if id != container_id {
+            continue;
+        }
+        
+        let status = container.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        if status != "Running" && status != "running" {
+            return false;
+        }
+        
+        // Check if the PID still exists
+        if let Some(pid) = container.get("pid").and_then(|p| p.as_i64()) {
+            if pid > 0 {
+                // Check if process exists
+                let exists = unsafe { libc::kill(pid as i32, 0) == 0 };
+                return !exists; // Orphaned if process doesn't exist
+            }
+        }
+    }
+    
+    false
 }
 

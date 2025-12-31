@@ -125,6 +125,13 @@ impl RuntimeImpl for MacOsRuntime {
                 pids: container_config.resources.pids,
                 blkio_weight: container_config.resources.blkio_weight,
             },
+            health_check: container_config.health_check.map(|hc| HealthCheckProto {
+                command: hc.command,
+                interval_secs: hc.interval,
+                timeout_secs: hc.timeout,
+                retries: hc.retries,
+                start_period_secs: hc.start_period,
+            }),
         });
 
         let mut rpc = rpc::RpcClient::connect_with_config(&self.config)?;

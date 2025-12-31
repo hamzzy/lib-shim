@@ -1,7 +1,11 @@
 use libcrun_shim_proto::*;
+use signal_hook::consts::{SIGINT, SIGTERM, SIGHUP};
+use signal_hook::iterator::Signals;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "linux")]
@@ -25,7 +29,44 @@ unsafe impl Send for LibcrunContainer {}
 #[cfg(target_os = "linux")]
 unsafe impl Sync for LibcrunContainer {}
 
+/// Configuration for container health checks
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct HealthCheckConfig {
+    #[serde(default)]
+    command: Vec<String>,
+    #[serde(default)]
+    interval_secs: Option<u64>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    retries: Option<u32>,
+    #[serde(default)]
+    start_period_secs: Option<u64>,
+}
+
+/// Serializable container state for persistence
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedContainerState {
+    id: String,
+    rootfs: String,
+    command: Vec<String>,
+    env: Vec<String>,
+    working_dir: String,
+    status: String,
+    pid: Option<u32>,
+    created_at: u64,
+    #[serde(default)]
+    health_check: Option<HealthCheckConfig>,
+    #[serde(default)]
+    last_health_check: Option<u64>,
+    #[serde(default)]
+    health_status: String,
+    #[serde(default)]
+    consecutive_failures: u32,
+}
+
 // Container state in the agent
+
 struct ContainerState {
     id: String,
     rootfs: String,
@@ -34,13 +75,69 @@ struct ContainerState {
     working_dir: String,
     status: String,
     pid: Option<u32>,
+    created_at: u64,
+    health_check: Option<HealthCheckConfig>,
+    last_health_check: Option<u64>,
+    health_status: String,
+    consecutive_failures: u32,
     #[cfg(target_os = "linux")]
     libcrun_container: Option<LibcrunContainer>,
+}
+
+impl ContainerState {
+    fn to_persisted(&self) -> PersistedContainerState {
+        PersistedContainerState {
+            id: self.id.clone(),
+            rootfs: self.rootfs.clone(),
+            command: self.command.clone(),
+            env: self.env.clone(),
+            working_dir: self.working_dir.clone(),
+            status: self.status.clone(),
+            pid: self.pid,
+            created_at: self.created_at,
+            health_check: self.health_check.clone(),
+            last_health_check: self.last_health_check,
+            health_status: self.health_status.clone(),
+            consecutive_failures: self.consecutive_failures,
+        }
+    }
+
+    fn from_persisted(p: PersistedContainerState) -> Self {
+        Self {
+            id: p.id,
+            rootfs: p.rootfs,
+            command: p.command,
+            env: p.env,
+            working_dir: p.working_dir,
+            status: p.status,
+            pid: p.pid,
+            created_at: p.created_at,
+            health_check: p.health_check,
+            last_health_check: p.last_health_check,
+            health_status: if p.health_status.is_empty() { "unknown".to_string() } else { p.health_status },
+            consecutive_failures: p.consecutive_failures,
+            #[cfg(target_os = "linux")]
+            libcrun_container: None,
+        }
+    }
+}
+
+/// Agent state directory for persistence
+const STATE_DIR: &str = "/var/run/libcrun-shim";
+const STATE_FILE: &str = "/var/run/libcrun-shim/state.json";
+
+/// Get current Unix timestamp in seconds
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // Shared state for the agent
 struct AgentState {
     containers: RwLock<HashMap<String, ContainerState>>,
+    state_dir: PathBuf,
     #[cfg(target_os = "linux")]
     libcrun_context: Option<LibcrunContext>,
     #[cfg(target_os = "linux")]
@@ -49,6 +146,12 @@ struct AgentState {
 
 impl AgentState {
     fn new() -> Self {
+        // Ensure state directory exists
+        let state_dir = PathBuf::from(STATE_DIR);
+        if let Err(e) = std::fs::create_dir_all(&state_dir) {
+            log::warn!("Failed to create state directory: {}", e);
+        }
+
         #[cfg(target_os = "linux")]
         {
             // Try to initialize libcrun context
@@ -63,18 +166,246 @@ impl AgentState {
                 }
             };
             
-            Self {
+            let state = Self {
                 containers: RwLock::new(HashMap::new()),
+                state_dir,
                 libcrun_context: context,
                 libcrun_available: available,
-            }
+            };
+            
+            // Recover any persisted state
+            state.recover_state();
+            state
         }
         
         #[cfg(not(target_os = "linux"))]
         {
-            Self {
+            let state = Self {
                 containers: RwLock::new(HashMap::new()),
+                state_dir,
+            };
+            
+            // Recover any persisted state
+            state.recover_state();
+            state
+        }
+    }
+    
+    /// Persist current container state to disk
+    fn persist_state(&self) {
+        let containers = self.containers.read().unwrap();
+        let persisted: Vec<PersistedContainerState> = containers
+            .values()
+            .map(|c| c.to_persisted())
+            .collect();
+        
+        match serde_json::to_string_pretty(&persisted) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(STATE_FILE, json) {
+                    log::error!("Failed to persist state: {}", e);
+                }
             }
+            Err(e) => {
+                log::error!("Failed to serialize state: {}", e);
+            }
+        }
+    }
+    
+    /// Recover state from disk and detect orphaned containers
+    fn recover_state(&self) {
+        let state_path = PathBuf::from(STATE_FILE);
+        if !state_path.exists() {
+            log::info!("No previous state found");
+            return;
+        }
+        
+        match std::fs::read_to_string(&state_path) {
+            Ok(json) => {
+                match serde_json::from_str::<Vec<PersistedContainerState>>(&json) {
+                    Ok(persisted) => {
+                        log::info!("Recovering {} containers from previous state", persisted.len());
+                        let mut containers = self.containers.write().unwrap();
+                        
+                        for p in persisted {
+                            // Check if the container process is still running
+                            let is_running = if let Some(pid) = p.pid {
+                                Self::is_process_running(pid)
+                            } else {
+                                false
+                            };
+                            
+                            if is_running {
+                                log::info!("Container {} (pid {}) still running, recovering", 
+                                    p.id, p.pid.unwrap_or(0));
+                                let mut state = ContainerState::from_persisted(p);
+                                state.status = "running".to_string();
+                                containers.insert(state.id.clone(), state);
+                            } else {
+                                // Container process not running - mark as orphaned
+                                log::warn!("Container {} was orphaned (pid {} not running), marking for cleanup", 
+                                    p.id, p.pid.unwrap_or(0));
+                                let mut state = ContainerState::from_persisted(p);
+                                state.status = "orphaned".to_string();
+                                state.pid = None;
+                                containers.insert(state.id.clone(), state);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse state file: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to read state file: {}", e);
+            }
+        }
+    }
+    
+    /// Check if a process is running
+    fn is_process_running(pid: u32) -> bool {
+        // Use kill(0) to check if process exists
+        unsafe {
+            libc::kill(pid as libc::pid_t, 0) == 0
+        }
+    }
+    
+    /// Cleanup orphaned containers
+    fn cleanup_orphans(&self) {
+        let mut containers = self.containers.write().unwrap();
+        let orphans: Vec<String> = containers
+            .iter()
+            .filter(|(_, c)| c.status == "orphaned")
+            .map(|(id, _)| id.clone())
+            .collect();
+        
+        for id in orphans {
+            log::info!("Cleaning up orphaned container: {}", id);
+            // Try to clean up any remaining resources
+            if let Some(container) = containers.get(&id) {
+                // Clean up container directory
+                let container_dir = format!("{}/{}", STATE_DIR, container.id);
+                let _ = std::fs::remove_dir_all(&container_dir);
+            }
+            containers.remove(&id);
+        }
+        drop(containers);
+        self.persist_state();
+    }
+    
+    /// Graceful shutdown - stop all containers
+    fn graceful_shutdown(&self) {
+        log::info!("Initiating graceful shutdown...");
+        
+        let container_ids: Vec<String> = {
+            let containers = self.containers.read().unwrap();
+            containers
+                .iter()
+                .filter(|(_, c)| c.status == "running" || c.status == "Running")
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        
+        for id in container_ids {
+            log::info!("Stopping container {} during shutdown", id);
+            if let Err(e) = self.stop_container(&id) {
+                log::error!("Failed to stop container {}: {}", id, e);
+            }
+        }
+        
+        // Final state persist
+        self.persist_state();
+        log::info!("Graceful shutdown complete");
+    }
+    
+    /// Run health checks for all containers that have them configured
+    fn run_health_checks(&self) {
+        let containers = self.containers.read().unwrap();
+        
+        for (id, container) in containers.iter() {
+            if container.status != "Running" && container.status != "running" {
+                continue;
+            }
+            
+            // Check if container has health check configured
+            if let Some(health_check) = &container.health_check {
+                if health_check.command.is_empty() {
+                    continue;
+                }
+                
+                // Check if enough time has passed since last check
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                    
+                let last_check = container.last_health_check.unwrap_or(0);
+                let interval = health_check.interval_secs.unwrap_or(30);
+                
+                if now - last_check < interval {
+                    continue;
+                }
+                
+                // Run health check
+                log::debug!("Running health check for container {}", id);
+                let result = self.execute_health_check(id, &health_check.command);
+                
+                match result {
+                    Ok(healthy) => {
+                        if healthy {
+                            log::debug!("Container {} health check passed", id);
+                        } else {
+                            log::warn!("Container {} health check failed", id);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Container {} health check error: {}", id, e);
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Execute a health check command for a container
+    fn execute_health_check(&self, _container_id: &str, command: &[String]) -> Result<bool, String> {
+        if command.is_empty() {
+            return Err("Empty health check command".to_string());
+        }
+        
+        let output = std::process::Command::new(&command[0])
+            .args(&command[1..])
+            .output()
+            .map_err(|e| format!("Failed to execute health check: {}", e))?;
+        
+        Ok(output.status.success())
+    }
+    
+    /// Stop a container by ID
+    fn stop_container(&self, id: &str) -> Result<(), String> {
+        let mut containers = self.containers.write().unwrap();
+        if let Some(container) = containers.get_mut(id) {
+            if let Some(pid) = container.pid {
+                // Send SIGTERM first
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                }
+                
+                // Wait briefly for graceful shutdown
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                
+                // Check if still running, send SIGKILL
+                if Self::is_process_running(pid) {
+                    log::warn!("Container {} did not stop gracefully, sending SIGKILL", id);
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                    }
+                }
+            }
+            container.status = "stopped".to_string();
+            container.pid = None;
+            Ok(())
+        } else {
+            Err(format!("Container {} not found", id))
         }
     }
     
@@ -334,35 +665,228 @@ impl Drop for AgentState {
     }
 }
 
+/// Agent configuration
+struct AgentConfig {
+    socket_path: String,
+    vsock_port: u32,
+    vsock_enabled: bool,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            socket_path: "/tmp/libcrun-shim.sock".to_string(),
+            vsock_port: 1234,
+            vsock_enabled: false,
+        }
+    }
+}
+
+fn parse_args() -> AgentConfig {
+    let args: Vec<String> = std::env::args().collect();
+    let mut config = AgentConfig::default();
+    let mut i = 1;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--version" | "-V" => {
+                println!("libcrun-shim-agent {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                println!("libcrun-shim-agent - Container runtime agent");
+                println!();
+                println!("Usage: libcrun-shim-agent [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  --socket PATH     Unix socket path (default: /tmp/libcrun-shim.sock)");
+                println!("  --vsock-port PORT Vsock port for VM communication");
+                println!("  --version         Print version");
+                println!("  --help            Print help");
+                std::process::exit(0);
+            }
+            "--socket" => {
+                i += 1;
+                if i < args.len() {
+                    config.socket_path = args[i].clone();
+                }
+            }
+            "--vsock-port" => {
+                i += 1;
+                if i < args.len() {
+                    config.vsock_port = args[i].parse().unwrap_or(1234);
+                    config.vsock_enabled = true;
+                }
+            }
+            _ => {
+                eprintln!("Unknown argument: {}", args[i]);
+            }
+        }
+        i += 1;
+    }
+
+    config
+}
+
+/// Global shutdown flag
+static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
+
 fn main() {
+    // Parse command line arguments
+    let config = parse_args();
+
     // Initialize logging
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .init();
     
-    // Remove old socket if it exists
-    let _ = std::fs::remove_file("/tmp/libcrun-shim.sock");
-    
-    // Listen on a Unix socket for RPC requests
-    let listener = UnixListener::bind("/tmp/libcrun-shim.sock")
-        .expect("Failed to bind to socket");
-    
-    log::info!("Agent listening on /tmp/libcrun-shim.sock");
-    
+    log::info!("libcrun-shim-agent v{}", env!("CARGO_PKG_VERSION"));
+
     // Create shared state
     let state = Arc::new(AgentState::new());
     
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    // Clean up any orphaned containers from previous runs
+    state.cleanup_orphans();
+
+    // Setup signal handlers
+    let state_for_signals = Arc::clone(&state);
+    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])
+        .expect("Failed to register signal handlers");
+    
+    std::thread::spawn(move || {
+        for sig in signals.forever() {
+            match sig {
+                SIGTERM => {
+                    log::info!("Received SIGTERM, initiating graceful shutdown");
+                    SHUTDOWN_FLAG.store(true, Ordering::SeqCst);
+                    state_for_signals.graceful_shutdown();
+                    std::process::exit(0);
+                }
+                SIGINT => {
+                    log::info!("Received SIGINT, initiating graceful shutdown");
+                    SHUTDOWN_FLAG.store(true, Ordering::SeqCst);
+                    state_for_signals.graceful_shutdown();
+                    std::process::exit(0);
+                }
+                SIGHUP => {
+                    log::info!("Received SIGHUP, reloading configuration");
+                    // Could reload config here if needed
+                    state_for_signals.persist_state();
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // If vsock is enabled, we'd listen on vsock here
+    // For now, use Unix socket
+    if config.vsock_enabled {
+        log::info!(
+            "Vsock mode enabled on port {} (not implemented, using Unix socket)",
+            config.vsock_port
+        );
+    }
+
+    // Remove old socket if it exists
+    let _ = std::fs::remove_file(&config.socket_path);
+    
+    // Listen on a Unix socket for RPC requests
+    let listener = UnixListener::bind(&config.socket_path)
+        .expect("Failed to bind to socket");
+    
+    // Set non-blocking so we can check shutdown flag
+    listener.set_nonblocking(true).expect("Failed to set non-blocking");
+
+    log::info!("Agent listening on {}", config.socket_path);
+
+    // Ensure socket is cleaned up on drop
+    struct SocketGuard(String);
+    impl Drop for SocketGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _guard = SocketGuard(config.socket_path.clone());
+
+    // Persist state periodically
+    let state_for_persist = Arc::clone(&state);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            if SHUTDOWN_FLAG.load(Ordering::SeqCst) {
+                break;
+            }
+            state_for_persist.persist_state();
+        }
+    });
+    
+    // Container watchdog - monitors container health and detects orphans
+    let state_for_watchdog = Arc::clone(&state);
+    std::thread::spawn(move || {
+        log::info!("Container watchdog started");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            if SHUTDOWN_FLAG.load(Ordering::SeqCst) {
+                break;
+            }
+            
+            // Check all running containers
+            let mut containers = state_for_watchdog.containers.write().unwrap();
+            let mut orphaned = Vec::new();
+            
+            for (id, container) in containers.iter() {
+                if container.status == "Running" {
+                    if let Some(pid) = container.pid {
+                        // Check if process is still alive
+                        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+                        if !alive {
+                            log::warn!("Container {} (PID {}) is no longer running - marking as orphaned", id, pid);
+                            orphaned.push(id.clone());
+                        }
+                    }
+                }
+            }
+            
+            // Mark orphaned containers
+            for id in orphaned {
+                if let Some(container) = containers.get_mut(&id) {
+                    container.status = "orphaned".to_string();
+                    container.pid = None;
+                }
+            }
+            
+            drop(containers);
+            
+            // Check health for containers with health checks
+            state_for_watchdog.run_health_checks();
+        }
+        log::info!("Container watchdog stopped");
+    });
+
+    // Main accept loop with shutdown check
+    loop {
+        if SHUTDOWN_FLAG.load(Ordering::SeqCst) {
+            log::info!("Shutdown flag set, exiting main loop");
+            break;
+        }
+        
+        match listener.accept() {
+            Ok((stream, _)) => {
                 let state_clone = Arc::clone(&state);
                 std::thread::spawn(move || handle_client(stream, state_clone));
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No connection ready, sleep briefly and check shutdown flag
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(e) => {
                 log::error!("Connection error: {}", e);
             }
         }
     }
+    
+    // Final cleanup
+    state.graceful_shutdown();
 }
 
 fn handle_client(mut stream: UnixStream, state: Arc<AgentState>) {
@@ -473,6 +997,15 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
             #[cfg(not(target_os = "linux"))]
             let libcrun_container: Option<*mut libcrun_sys::libcrun_container_t> = None;
             
+            // Convert health check from proto if present
+            let health_check = req.health_check.map(|hc| HealthCheckConfig {
+                command: hc.command,
+                interval_secs: if hc.interval_secs > 0 { Some(hc.interval_secs) } else { None },
+                timeout_secs: if hc.timeout_secs > 0 { Some(hc.timeout_secs) } else { None },
+                retries: if hc.retries > 0 { Some(hc.retries) } else { None },
+                start_period_secs: if hc.start_period_secs > 0 { Some(hc.start_period_secs) } else { None },
+            });
+            
             let container_state = ContainerState {
                 id: req.id.clone(),
                 rootfs: req.rootfs,
@@ -481,11 +1014,17 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                 working_dir: req.working_dir,
                 status: "Created".to_string(),
                 pid: None,
+                created_at: current_timestamp(),
+                health_check,
+                last_health_check: None,
+                health_status: "unknown".to_string(),
+                consecutive_failures: 0,
                 #[cfg(target_os = "linux")]
                 libcrun_container,
             };
             
             state.containers.write().unwrap().insert(req.id.clone(), container_state);
+            state.persist_state();
             Response::Created(req.id)
         }
         Request::Start(id) => {
@@ -540,6 +1079,8 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                             c.pid = Some(std::process::id()); // Placeholder
                         }
                         
+                        drop(containers);
+                        state.persist_state();
                         Response::Started
                     }
                 }
@@ -581,6 +1122,8 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         log::info!("Stopping container: {}", id);
                         c.status = "Stopped".to_string();
                         c.pid = None;
+                        drop(containers);
+                        state.persist_state();
                         Response::Stopped
                     }
                 }
@@ -616,8 +1159,14 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                             }
                         }
                         
+                        // Clean up any container-specific state files
+                        let container_state_dir = format!("{}/{}", STATE_DIR, id);
+                        let _ = std::fs::remove_dir_all(&container_state_dir);
+                        
                         log::info!("Deleting container: {}", id);
                         containers.remove(&id);
+                        drop(containers);
+                        state.persist_state();
                         Response::Deleted
                     }
                 }

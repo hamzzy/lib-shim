@@ -48,6 +48,24 @@ pub struct CreateRequest {
     pub network: NetworkConfigProto,
     pub volumes: Vec<VolumeMountProto>,
     pub resources: ResourceLimitsProto,
+    
+    // Health check configuration
+    #[serde(default)]
+    pub health_check: Option<HealthCheckProto>,
+}
+
+/// Health check configuration for proto
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HealthCheckProto {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub interval_secs: u64,
+    #[serde(default)]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub retries: u32,
+    #[serde(default)]
+    pub start_period_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

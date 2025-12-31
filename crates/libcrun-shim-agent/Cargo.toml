@@ -11,4 +11,5 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 log = { workspace = true }
 env_logger = { workspace = true }
+signal-hook = "0.3"
 

@@ -102,6 +102,59 @@ impl ContainerRuntime {
     pub async fn exec(&self, id: &str, command: Vec<String>) -> Result<(i32, String, String)> {
         self.inner.exec(id, command).await
     }
+
+    /// Gracefully shutdown all running containers
+    pub async fn shutdown(&self) -> Result<()> {
+        log::info!("Initiating graceful shutdown of all containers");
+        let containers = self.list().await?;
+        
+        for container in containers {
+            if container.status == ContainerStatus::Running {
+                log::info!("Stopping container '{}' during shutdown", container.id);
+                if let Err(e) = self.stop(&container.id).await {
+                    log::warn!("Failed to stop container '{}': {}", container.id, e);
+                }
+            }
+        }
+        
+        log::info!("Graceful shutdown complete");
+        Ok(())
+    }
+
+    /// List containers that may be orphaned (crashed/not properly cleaned up)
+    pub async fn list_orphaned(&self) -> Result<Vec<ContainerInfo>> {
+        let containers = self.list().await?;
+        Ok(containers.into_iter().filter(|c| c.status == ContainerStatus::Stopped).collect())
+    }
+
+    /// Force cleanup of a container (even if it's still running)
+    pub async fn force_delete(&self, id: &str) -> Result<()> {
+        // Try to stop first, ignore errors
+        let _ = self.stop(id).await;
+        
+        // Give container time to stop
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        
+        // Delete regardless
+        self.delete(id).await
+    }
+
+    /// Cleanup all stopped/orphaned containers
+    pub async fn cleanup_stopped(&self) -> Result<usize> {
+        let containers = self.list().await?;
+        let mut cleaned = 0;
+        
+        for container in containers {
+            if container.status == ContainerStatus::Stopped {
+                log::info!("Cleaning up stopped container '{}'", container.id);
+                if self.delete(&container.id).await.is_ok() {
+                    cleaned += 1;
+                }
+            }
+        }
+        
+        Ok(cleaned)
+    }
 }
 
 #[cfg(target_os = "linux")]
