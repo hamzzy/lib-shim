@@ -93,6 +93,15 @@ impl VsockClient {
             if let Some(handle) = self.vm_bridge_handle {
                 log::debug!("Attempting native vsock connection to port {}", self.port);
 
+                // #region host log
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/user/libcrun-shim/.cursor/debug.log").and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, r#"{{"id":"log_{}","timestamp":{},"location":"host:vsock:connect:entry","message":"Starting vsock connection","data":{{"port":{},"hypothesisId":"B,C"}},"sessionId":"debug-session","runId":"run1"}}"#, 
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), self.port)
+                });
+                // #endregion
+
                 // Reset connection state
                 VSOCK_CONNECT_COMPLETE.store(false, Ordering::SeqCst);
                 VSOCK_CONNECT_FD.store(-1, Ordering::SeqCst);
@@ -120,9 +129,25 @@ impl VsockClient {
                 let fd = VSOCK_CONNECT_FD.load(Ordering::SeqCst);
                 if fd >= 0 {
                     log::info!("Native vsock connection established, fd: {}", fd);
+                    // #region host log
+                    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/user/libcrun-shim/.cursor/debug.log").and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, r#"{{"id":"log_{}","timestamp":{},"location":"host:vsock:connect:success","message":"Vsock connected","data":{{"fd":{},"port":{},"hypothesisId":"B,C"}},"sessionId":"debug-session","runId":"run1"}}"#, 
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), fd, self.port)
+                    });
+                    // #endregion
                     return Ok(VsockStream::VsockFd(VsockStreamFd::new(fd)));
                 } else {
                     log::warn!("Vsock connection failed, falling back to Unix socket");
+                    // #region host log
+                    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/user/libcrun-shim/.cursor/debug.log").and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, r#"{{"id":"log_{}","timestamp":{},"location":"host:vsock:connect:failed","message":"Vsock connection failed","data":{{"fd":{},"port":{},"hypothesisId":"B,C,D"}},"sessionId":"debug-session","runId":"run1"}}"#, 
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), fd, self.port)
+                    });
+                    // #endregion
                     return self.connect_unix_socket();
                 }
             } else {

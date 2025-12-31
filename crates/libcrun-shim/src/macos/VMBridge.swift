@@ -204,54 +204,92 @@ public struct VMNetworkConfig {
         }
     }
 
-    /// Start the VM with async completion handler
-    @objc public func startVMWithCompletion(_ completion: @escaping (Bool, String?) -> Void) {
+    /// Start the VM synchronously (blocks until VM starts or fails)
+    /// Returns true on success, false on failure
+    @objc public func startVMSync() -> Bool {
         guard let vm = virtualMachine else {
-            completion(false, "VM not created")
-            return
+            print("VM not created")
+            return false
         }
 
-        completionHandler = completion
+        let semaphore = DispatchSemaphore(value: 0)
+        var success = false
 
-        // VZVirtualMachine requires main thread for start
-        DispatchQueue.main.async {
-            vm.start { result in
-                switch result {
-                case .success:
-                    print("VM started successfully")
-                    self.completionHandler?(true, nil)
-                case .failure(let error):
-                    print("VM failed to start: \(error)")
-                    self.completionHandler?(false, error.localizedDescription)
-                }
-                self.completionHandler = nil
+        print("Starting VM synchronously...")
+
+        // Start the VM
+        vm.start { result in
+            switch result {
+            case .success:
+                print("VM started successfully")
+                success = true
+            case .failure(let error):
+                print("VM failed to start: \(error)")
+                success = false
+            }
+            semaphore.signal()
+        }
+
+        // Pump the run loop while waiting for the VM to start
+        let timeout = Date().addingTimeInterval(30.0)
+        while semaphore.wait(timeout: .now()) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+            if Date() > timeout {
+                print("VM start timed out")
+                return false
             }
         }
+
+        return success
     }
 
-    /// Stop the VM with async completion handler
-    @objc public func stopVMWithCompletion(_ completion: @escaping (Bool, String?) -> Void) {
+    /// Start the VM with async completion handler (legacy - may not work in CLI apps)
+    @objc public func startVMWithCompletion(_ completion: @escaping (Bool, String?) -> Void) {
+        // For CLI apps, just use the sync version
+        let success = startVMSync()
+        completion(success, success ? nil : "VM start failed")
+    }
+
+    /// Stop the VM synchronously
+    @objc public func stopVMSync() -> Bool {
         guard let vm = virtualMachine else {
-            completion(false, "VM not created")
-            return
+            print("VM not created")
+            return false
         }
 
-        completionHandler = completion
+        let semaphore = DispatchSemaphore(value: 0)
+        var success = false
 
-        // VZVirtualMachine requires main thread for stop
-        DispatchQueue.main.async {
-            // The stop() method uses a different signature - it passes an optional error
-            vm.stop { error in
-                if let error = error {
-                    print("VM failed to stop: \(error)")
-                    self.completionHandler?(false, error.localizedDescription)
-                } else {
-                    print("VM stopped successfully")
-                    self.completionHandler?(true, nil)
-                }
-                self.completionHandler = nil
+        print("Stopping VM synchronously...")
+
+        vm.stop { error in
+            if let error = error {
+                print("VM failed to stop: \(error)")
+                success = false
+            } else {
+                print("VM stopped successfully")
+                success = true
+            }
+            semaphore.signal()
+        }
+
+        // Pump the run loop while waiting
+        let timeout = Date().addingTimeInterval(10.0)
+        while semaphore.wait(timeout: .now()) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+            if Date() > timeout {
+                print("VM stop timed out")
+                return false
             }
         }
+
+        return success
+    }
+
+    /// Stop the VM with async completion handler (legacy)
+    @objc public func stopVMWithCompletion(_ completion: @escaping (Bool, String?) -> Void) {
+        let success = stopVMSync()
+        completion(success, success ? nil : "VM stop failed")
     }
 
     /// Get VM state
@@ -312,29 +350,96 @@ public struct VMNetworkConfig {
         return vm.socketDevices.first as? VZVirtioSocketDevice
     }
 
-    /// Connect to a vsock port and return the file descriptor
+    /// Connect to a vsock port synchronously and return the file descriptor
     /// Returns -1 on error
-    @objc public func connectToVsockPort(_ port: UInt32, completion: @escaping (Int32, String?) -> Void) {
-        guard let vsockDevice = getVsockDevice() else {
-            completion(-1, "No vsock device available")
-            return
-        }
-
-        // VZVirtioSocketDevice requires main thread
-        DispatchQueue.main.async {
-            vsockDevice.connect(toPort: port) { result in
-                switch result {
-                case .success(let connection):
-                    // Get the file descriptor from the connection
-                    let fd = connection.fileDescriptor
-                    print("Vsock connection established, fd: \(fd)")
-                    completion(fd, nil)
-                case .failure(let error):
-                    print("Vsock connection failed: \(error)")
-                    completion(-1, error.localizedDescription)
-                }
+    @objc public func connectToVsockPortSync(_ port: UInt32) -> Int32 {
+        // #region host log
+        let logPath = "/Users/user/libcrun-shim/.cursor/debug.log"
+        if let logData = "{\"id\":\"log_\(Int(Date().timeIntervalSince1970))\",\"timestamp\":\(Int(Date().timeIntervalSince1970 * 1000)),\"location\":\"swift:connectToVsockPortSync:entry\",\"message\":\"Swift vsock connect start\",\"data\":{\"port\":\(port),\"hypothesisId\":\"C\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\"}\n".data(using: .utf8) {
+            if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+                fileHandle.seekToEndOfFile()
+                fileHandle.write(logData)
+                fileHandle.closeFile()
+            } else if FileManager.default.createFile(atPath: logPath, contents: logData, attributes: nil) {
+                // File created
             }
         }
+        // #endregion
+
+        guard let vsockDevice = getVsockDevice() else {
+            print("No vsock device available")
+            // #region host log
+            if let logData = "{\"id\":\"log_\(Int(Date().timeIntervalSince1970))\",\"timestamp\":\(Int(Date().timeIntervalSince1970 * 1000)),\"location\":\"swift:connectToVsockPortSync:no_device\",\"message\":\"No vsock device\",\"data\":{\"hypothesisId\":\"C\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\"}\n".data(using: .utf8) {
+                if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+                    fileHandle.seekToEndOfFile()
+                    fileHandle.write(logData)
+                    fileHandle.closeFile()
+                } else {
+                    _ = FileManager.default.createFile(atPath: logPath, contents: logData, attributes: nil)
+                }
+            }
+            // #endregion
+            return -1
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var resultFd: Int32 = -1
+
+        print("Connecting to vsock port \(port)...")
+
+        vsockDevice.connect(toPort: port) { result in
+            switch result {
+            case .success(let connection):
+                resultFd = connection.fileDescriptor
+                print("Vsock connection established, fd: \(resultFd)")
+                // #region host log
+                if let logData = "{\"id\":\"log_\(Int(Date().timeIntervalSince1970))\",\"timestamp\":\(Int(Date().timeIntervalSince1970 * 1000)),\"location\":\"swift:connectToVsockPortSync:success\",\"message\":\"Swift vsock connected\",\"data\":{\"fd\":\(resultFd),\"port\":\(port),\"hypothesisId\":\"C\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\"}\n".data(using: .utf8) {
+                    if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+                        fileHandle.seekToEndOfFile()
+                        fileHandle.write(logData)
+                        fileHandle.closeFile()
+                    } else {
+                        _ = FileManager.default.createFile(atPath: logPath, contents: logData, attributes: nil)
+                    }
+                }
+                // #endregion
+            case .failure(let error):
+                print("Vsock connection failed: \(error)")
+                resultFd = -1
+                // #region host log
+                let errorDesc = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
+                if let logData = "{\"id\":\"log_\(Int(Date().timeIntervalSince1970))\",\"timestamp\":\(Int(Date().timeIntervalSince1970 * 1000)),\"location\":\"swift:connectToVsockPortSync:failure\",\"message\":\"Swift vsock failed\",\"data\":{\"error\":\"\(errorDesc)\",\"port\":\(port),\"hypothesisId\":\"C,D\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\"}\n".data(using: .utf8) {
+                    if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+                        fileHandle.seekToEndOfFile()
+                        fileHandle.write(logData)
+                        fileHandle.closeFile()
+                    } else {
+                        _ = FileManager.default.createFile(atPath: logPath, contents: logData, attributes: nil)
+                    }
+                }
+                // #endregion
+            }
+            semaphore.signal()
+        }
+
+        // Pump the run loop while waiting
+        let timeout = Date().addingTimeInterval(10.0)
+        while semaphore.wait(timeout: .now()) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+            if Date() > timeout {
+                print("Vsock connection timed out")
+                return -1
+            }
+        }
+
+        return resultFd
+    }
+
+    /// Connect to a vsock port and return the file descriptor (legacy async version)
+    /// Returns -1 on error
+    @objc public func connectToVsockPort(_ port: UInt32, completion: @escaping (Int32, String?) -> Void) {
+        let fd = connectToVsockPortSync(port)
+        completion(fd, fd >= 0 ? nil : "Connection failed")
     }
 }
 
@@ -444,13 +549,12 @@ public func vm_bridge_start_vm(_ handle: UnsafeMutableRawPointer?, _ callback: @
 
     let bridge = Unmanaged<VMBridge>.fromOpaque(handle).takeUnretainedValue()
 
-    bridge.startVMWithCompletion { success, errorMessage in
-        if success {
-            callback(true, nil)
-        } else {
-            let cString = errorMessage?.cString(using: .utf8) ?? "Unknown error".cString(using: .utf8)
-            callback(false, cString)
-        }
+    // Use synchronous start to avoid run loop issues in CLI apps
+    let success = bridge.startVMSync()
+    if success {
+        callback(true, nil)
+    } else {
+        callback(false, "VM start failed".cString(using: .utf8))
     }
 }
 
@@ -465,13 +569,12 @@ public func vm_bridge_stop_vm(_ handle: UnsafeMutableRawPointer?, _ callback: @e
 
     let bridge = Unmanaged<VMBridge>.fromOpaque(handle).takeUnretainedValue()
 
-    bridge.stopVMWithCompletion { success, errorMessage in
-        if success {
-            callback(true, nil)
-        } else {
-            let cString = errorMessage?.cString(using: .utf8) ?? "Unknown error".cString(using: .utf8)
-            callback(false, cString)
-        }
+    // Use synchronous stop to avoid run loop issues in CLI apps
+    let success = bridge.stopVMSync()
+    if success {
+        callback(true, nil)
+    } else {
+        callback(false, "VM stop failed".cString(using: .utf8))
     }
 }
 

@@ -314,11 +314,24 @@ echo "  Kernel: $(uname -r)"
 echo "  Agent: $(bin/libcrun-shim-agent --version 2>/dev/null || echo 'unknown')"
 echo "============================================"
 
-# Start the agent
+# Start the agent with error handling
 echo "Starting libcrun-shim-agent..."
-exec /bin/libcrun-shim-agent --socket /run/shim.sock --vsock-port 1234
+echo "Agent will listen on:"
+echo "  - Unix socket: /run/shim.sock"
+echo "  - Vsock port: 1234"
+echo ""
 
-# If agent exits, drop to shell for debugging
+# Try to start agent, capture any errors
+if /bin/libcrun-shim-agent --socket /run/shim.sock --vsock-port 1234 2>&1; then
+    echo "Agent exited normally"
+else
+    AGENT_EXIT_CODE=$?
+    echo "Agent exited with code: $AGENT_EXIT_CODE"
+    echo "Dropping to shell for debugging..."
+    exec /bin/sh
+fi
+
+# If we get here, agent exited - drop to shell
 exec /bin/sh
 INIT_SCRIPT
 

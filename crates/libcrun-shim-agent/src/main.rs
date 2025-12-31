@@ -9,6 +9,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "linux")]
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+
+// Vsock constants
+#[cfg(target_os = "linux")]
+const AF_VSOCK: libc::c_int = 40;
+#[cfg(target_os = "linux")]
+const VMADDR_CID_ANY: u32 = 0xFFFFFFFF;
+#[cfg(target_os = "linux")]
+const VMADDR_CID_HOST: u32 = 2;  // Host (macOS) CID
+
+#[cfg(target_os = "linux")]
 use libcrun_sys::safe as crun;
 
 // Wrapper to make raw pointers Send + Sync
@@ -678,6 +689,104 @@ impl Drop for AgentState {
     }
 }
 
+/// Create a vsock listener socket
+#[cfg(target_os = "linux")]
+fn create_vsock_listener(port: u32) -> std::io::Result<RawFd> {
+    use std::mem;
+
+    eprintln!("[AGENT] Creating vsock socket (AF_VSOCK={})...", AF_VSOCK);
+
+    // Create vsock socket
+    let fd = unsafe { libc::socket(AF_VSOCK, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("[AGENT] ERROR: socket() failed: {}", err);
+        return Err(err);
+    }
+    eprintln!("[AGENT] Socket created, fd={}", fd);
+
+    // Bind to the port
+    #[repr(C)]
+    struct SockaddrVm {
+        svm_family: libc::sa_family_t,
+        svm_reserved1: u16,
+        svm_port: u32,
+        svm_cid: u32,
+        svm_zero: [u8; 4],
+    }
+
+    // For listening, we bind to VMADDR_CID_ANY (any CID can connect)
+    // But for Apple Virtualization Framework, connections come from CID 2 (host)
+    let addr = SockaddrVm {
+        svm_family: AF_VSOCK as libc::sa_family_t,
+        svm_reserved1: 0,
+        svm_port: port,
+        svm_cid: VMADDR_CID_ANY,  // Listen on any CID (host connects from CID 2)
+        svm_zero: [0; 4],
+    };
+    eprintln!("[AGENT] Binding to CID={} (VMADDR_CID_ANY), port={}", VMADDR_CID_ANY, port);
+
+    let ret = unsafe {
+        libc::bind(
+            fd,
+            &addr as *const SockaddrVm as *const libc::sockaddr,
+            mem::size_of::<SockaddrVm>() as libc::socklen_t,
+        )
+    };
+
+    eprintln!("[AGENT] Binding to port {}...", port);
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("[AGENT] ERROR: bind() failed: {}", err);
+        unsafe { libc::close(fd) };
+        return Err(err);
+    }
+    eprintln!("[AGENT] Bind successful");
+
+    // Listen for connections
+    eprintln!("[AGENT] Calling listen()...");
+    let ret = unsafe { libc::listen(fd, 5) };
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("[AGENT] ERROR: listen() failed: {}", err);
+        unsafe { libc::close(fd) };
+        return Err(err);
+    }
+    eprintln!("[AGENT] Listen successful");
+
+    // Set non-blocking
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        unsafe { libc::close(fd) };
+        return Err(std::io::Error::last_os_error());
+    }
+    let ret = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if ret < 0 {
+        unsafe { libc::close(fd) };
+        return Err(std::io::Error::last_os_error());
+    }
+
+    eprintln!("[AGENT] Vsock listener fully initialized, fd={}, port={}", fd, port);
+    Ok(fd)
+}
+
+/// Accept a connection from vsock
+#[cfg(target_os = "linux")]
+fn accept_vsock(fd: RawFd) -> Option<std::net::TcpStream> {
+    let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
+    if client_fd < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::WouldBlock {
+            log::debug!("Vsock accept error: {}", err);
+        }
+        return None;
+    }
+
+    // Wrap the fd in a TcpStream for convenience (it's not actually TCP, but it has the same interface)
+    // This is a bit of a hack, but it works for our purposes
+    Some(unsafe { std::net::TcpStream::from_raw_fd(client_fd) })
+}
+
 /// Agent configuration
 struct AgentConfig {
     socket_path: String,
@@ -748,12 +857,16 @@ fn main() {
     // Parse command line arguments
     let config = parse_args();
 
-    // Initialize logging
+    // Initialize logging - also log to stderr for VM visibility
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
+        .target(env_logger::Target::Stderr)
         .init();
 
     log::info!("libcrun-shim-agent v{}", env!("CARGO_PKG_VERSION"));
+    eprintln!("[AGENT] libcrun-shim-agent v{} starting...", env!("CARGO_PKG_VERSION"));
+    eprintln!("[AGENT] Config: socket={}, vsock_port={}, vsock_enabled={}", 
+              config.socket_path, config.vsock_port, config.vsock_enabled);
 
     // Create shared state
     let state = Arc::new(AgentState::new());
@@ -791,14 +904,31 @@ fn main() {
         }
     });
 
-    // If vsock is enabled, we'd listen on vsock here
-    // For now, use Unix socket
-    if config.vsock_enabled {
-        log::info!(
-            "Vsock mode enabled on port {} (not implemented, using Unix socket)",
-            config.vsock_port
-        );
-    }
+    // Setup vsock listener if enabled (Linux only)
+    #[cfg(target_os = "linux")]
+    let vsock_fd: Option<RawFd> = if config.vsock_enabled {
+        eprintln!("[AGENT] Setting up vsock listener on port {}...", config.vsock_port);
+        match create_vsock_listener(config.vsock_port) {
+            Ok(fd) => {
+                log::info!("Vsock listener started on port {}", config.vsock_port);
+                eprintln!("[AGENT] Vsock listener ready on port {}, fd={}", config.vsock_port, fd);
+                Some(fd)
+            }
+            Err(e) => {
+                log::warn!("Failed to create vsock listener: {}, falling back to Unix socket only", e);
+                eprintln!("[AGENT] ERROR: Failed to create vsock listener: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[AGENT] Vsock disabled");
+        None
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let vsock_fd: Option<i32> = None;
+    #[cfg(not(target_os = "linux"))]
+    let _ = &config; // silence unused warning
 
     // Remove old socket if it exists
     let _ = std::fs::remove_file(&config.socket_path);
@@ -812,6 +942,22 @@ fn main() {
         .expect("Failed to set non-blocking");
 
     log::info!("Agent listening on {}", config.socket_path);
+    eprintln!("[AGENT] Agent listening on Unix socket: {}", config.socket_path);
+    
+    // Write status to /tmp for debugging (accessible in VM)
+    let _ = std::fs::write("/tmp/agent-status.txt", format!(
+        "Agent started\nSocket: {}\nVsock port: {}\nVsock enabled: {}\nVsock fd: {:?}\n",
+        config.socket_path, config.vsock_port, config.vsock_enabled, vsock_fd
+    ));
+    
+    if vsock_fd.is_some() {
+        log::info!("Also listening on vsock port {}", config.vsock_port);
+        eprintln!("[AGENT] Also listening on vsock port {}", config.vsock_port);
+        let _ = std::fs::write("/tmp/agent-vsock-ready.txt", format!("Vsock ready on port {}", config.vsock_port));
+    } else {
+        eprintln!("[AGENT] WARNING: Vsock listener not available!");
+        let _ = std::fs::write("/tmp/agent-vsock-failed.txt", "Vsock listener creation failed");
+    }
 
     // Ensure socket is cleaned up on drop
     struct SocketGuard(String);
@@ -886,26 +1032,56 @@ fn main() {
             break;
         }
 
+        // Check for Unix socket connections
         match listener.accept() {
             Ok((stream, _)) => {
+                log::debug!("Accepted Unix socket connection");
                 let state_clone = Arc::clone(&state);
-                std::thread::spawn(move || handle_client(stream, state_clone));
+                std::thread::spawn(move || handle_unix_client(stream, state_clone));
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No connection ready, sleep briefly and check shutdown flag
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                // No connection ready, continue to check vsock
             }
             Err(e) => {
-                log::error!("Connection error: {}", e);
+                log::error!("Unix socket connection error: {}", e);
             }
         }
+
+        // Check for vsock connections (Linux only)
+        #[cfg(target_os = "linux")]
+        if let Some(fd) = vsock_fd {
+            if let Some(stream) = accept_vsock(fd) {
+                eprintln!("[AGENT] Accepted vsock connection!");
+                log::info!("Accepted vsock connection");
+                let state_clone = Arc::clone(&state);
+                std::thread::spawn(move || handle_tcp_client(stream, state_clone));
+            }
+        }
+
+        // Brief sleep to avoid busy-waiting
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Clean up vsock listener
+    #[cfg(target_os = "linux")]
+    if let Some(fd) = vsock_fd {
+        unsafe { libc::close(fd) };
     }
 
     // Final cleanup
     state.graceful_shutdown();
 }
 
-fn handle_client(mut stream: UnixStream, state: Arc<AgentState>) {
+fn handle_unix_client(stream: UnixStream, state: Arc<AgentState>) {
+    handle_client_generic(stream, state);
+}
+
+#[cfg(target_os = "linux")]
+fn handle_tcp_client(stream: std::net::TcpStream, state: Arc<AgentState>) {
+    handle_client_generic(stream, state);
+}
+
+fn handle_client_generic<S: Read + Write>(mut stream: S, state: Arc<AgentState>) {
     let mut buffer = vec![0u8; 4096];
 
     loop {

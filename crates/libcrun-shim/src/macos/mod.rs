@@ -35,12 +35,12 @@ impl MacOsRuntime {
         #[cfg(target_os = "macos")]
         {
             if vm.has_vm_control() {
-                log::info!("VM started via Swift bridge - full VM control available");
-                // Wait for VM to boot
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                log::info!("VM started via Swift bridge - waiting for guest to boot...");
+                // Kernel boot + initramfs + agent startup typically takes 15-20s
+                tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
+                log::info!("Boot wait complete, attempting to connect to agent");
             } else {
                 log::info!("Using fallback mode - assuming external VM is running");
-                // Wait a bit for external VM
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             }
         }
@@ -50,26 +50,59 @@ impl MacOsRuntime {
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
 
-        // Connect to agent - try vsock first if VM bridge is available
+        // Connect to agent with retry logic
         #[cfg(target_os = "macos")]
-        let rpc = if let Some(handle) = vm.get_bridge_handle() {
-            log::info!("Attempting vsock connection via Swift bridge");
-            match rpc::RpcClient::connect_with_vm_bridge(vm.config(), handle) {
-                Ok(client) => {
-                    log::info!("Connected to VM agent via native vsock");
-                    client
+        let rpc = {
+            let max_retries = 5;
+            let retry_delay = tokio::time::Duration::from_secs(3);
+            let mut connected_client: Option<rpc::RpcClient> = None;
+            let mut last_error = None;
+
+            for attempt in 1..=max_retries {
+                log::info!("Connection attempt {}/{}", attempt, max_retries);
+
+                // Try vsock first if bridge is available
+                if let Some(handle) = vm.get_bridge_handle() {
+                    log::debug!("Attempting vsock connection via Swift bridge");
+                    match rpc::RpcClient::connect_with_vm_bridge(vm.config(), handle) {
+                        Ok(client) => {
+                            log::info!("Connected to VM agent via native vsock");
+                            connected_client = Some(client);
+                            break;
+                        }
+                        Err(e) => {
+                            log::debug!("Vsock connection failed: {}", e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    log::warn!(
-                        "Vsock connection failed: {}, falling back to Unix socket",
-                        e
-                    );
-                    rpc::RpcClient::connect_with_config(vm.config())?
+
+                // Try Unix socket as fallback
+                match rpc::RpcClient::connect_with_config(vm.config()) {
+                    Ok(client) => {
+                        log::info!("Connected to VM agent via Unix socket");
+                        connected_client = Some(client);
+                        break;
+                    }
+                    Err(e) => {
+                        log::debug!("Unix socket connection failed: {}", e);
+                        last_error = Some(e);
+                    }
+                }
+
+                if attempt < max_retries {
+                    log::info!("Retrying in {}s...", retry_delay.as_secs());
+                    tokio::time::sleep(retry_delay).await;
                 }
             }
-        } else {
-            log::info!("No VM bridge available, connecting via Unix socket");
-            rpc::RpcClient::connect_with_config(vm.config())?
+
+            match connected_client {
+                Some(client) => client,
+                None => {
+                    return Err(last_error.unwrap_or_else(|| {
+                        ShimError::runtime("Failed to connect to agent after all retries")
+                    }));
+                }
+            }
         };
 
         #[cfg(not(target_os = "macos"))]
