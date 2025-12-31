@@ -54,11 +54,11 @@ impl AgentState {
             // Try to initialize libcrun context
             let (context, available) = match crun::context_new() {
                 Ok(ctx) => {
-                    println!("libcrun initialized in agent");
+                    log::info!("libcrun initialized successfully in agent - using real container operations");
                     (Some(LibcrunContext(ctx)), true)
                 }
                 Err(e) => {
-                    println!("libcrun not available in agent: {}, using fallback", e.message);
+                    log::warn!("libcrun not available in agent: {}, using fallback mode", e.message);
                     (None, false)
                 }
             };
@@ -85,6 +85,10 @@ impl AgentState {
         env: &[String],
         working_dir: &str,
         container_id: &str,
+        stdio: &libcrun_shim_proto::StdioConfigProto,
+        network: &libcrun_shim_proto::NetworkConfigProto,
+        volumes: &[libcrun_shim_proto::VolumeMountProto],
+        resources: &libcrun_shim_proto::ResourceLimitsProto,
     ) -> Result<String, String> {
         // Ensure PATH is in env if not provided
         let mut env_vec = env.to_vec();
@@ -93,10 +97,151 @@ impl AgentState {
             env_vec.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());
         }
         
+        // Build mounts array with default mounts + user volumes
+        let mut mounts = vec![
+            serde_json::json!({
+                "destination": "/proc",
+                "type": "proc",
+                "source": "proc"
+            }),
+            serde_json::json!({
+                "destination": "/dev",
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
+            }),
+            serde_json::json!({
+                "destination": "/dev/pts",
+                "type": "devpts",
+                "source": "devpts",
+                "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"]
+            }),
+            serde_json::json!({
+                "destination": "/dev/shm",
+                "type": "tmpfs",
+                "source": "shm",
+                "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+            }),
+            serde_json::json!({
+                "destination": "/sys",
+                "type": "sysfs",
+                "source": "sysfs",
+                "options": ["nosuid", "noexec", "nodev", "ro"]
+            }),
+        ];
+        
+        // Add user-defined volume mounts
+        for volume in volumes {
+            let mut mount = serde_json::json!({
+                "destination": volume.destination,
+                "type": "bind",
+                "source": volume.source,
+            });
+            
+            if !volume.options.is_empty() {
+                mount["options"] = serde_json::json!(volume.options);
+            }
+            
+            mounts.push(mount);
+        }
+        
+        // Build rlimits array with defaults + resource limits
+        let mut rlimits = vec![
+            serde_json::json!({
+                "type": "RLIMIT_NOFILE",
+                "hard": 1024,
+                "soft": 1024
+            }),
+        ];
+        
+        // Add resource limits
+        if let Some(memory) = resources.memory {
+            if memory > 0 {
+                rlimits.push(serde_json::json!({
+                    "type": "RLIMIT_AS",
+                    "hard": memory,
+                    "soft": memory
+                }));
+            }
+        }
+        
+        if let Some(pids) = resources.pids {
+            if pids > 0 {
+                rlimits.push(serde_json::json!({
+                    "type": "RLIMIT_NPROC",
+                    "hard": pids,
+                    "soft": pids
+                }));
+            }
+        }
+        
+        // Build resources object
+        let mut resources_obj = serde_json::json!({
+            "devices": [
+                {
+                    "allow": false,
+                    "access": "rwm"
+                }
+            ]
+        });
+        
+        // Add CPU and memory limits
+        if resources.cpu.is_some() || resources.memory.is_some() {
+            let mut cpu_obj = serde_json::json!({});
+            if let Some(cpu) = resources.cpu {
+                if cpu > 0.0 {
+                    cpu_obj["shares"] = serde_json::json!((cpu * 1024.0) as u64);
+                    cpu_obj["quota"] = serde_json::json!((cpu * 100000.0) as i64);
+                    cpu_obj["period"] = serde_json::json!(100000);
+                }
+            }
+            
+            let mut memory_obj = serde_json::json!({});
+            if let Some(memory) = resources.memory {
+                if memory > 0 {
+                    memory_obj["limit"] = serde_json::json!(memory);
+                }
+            }
+            if let Some(memory_swap) = resources.memory_swap {
+                if memory_swap > 0 {
+                    memory_obj["swap"] = serde_json::json!(memory_swap);
+                }
+            }
+            
+            if !cpu_obj.as_object().unwrap().is_empty() {
+                resources_obj["cpu"] = cpu_obj;
+            }
+            if !memory_obj.as_object().unwrap().is_empty() {
+                resources_obj["memory"] = memory_obj;
+            }
+        }
+        
+        // Determine network namespace based on network mode
+        let network_namespace = match network.mode.as_str() {
+            "host" => None, // No network namespace for host mode
+            "none" => Some(serde_json::json!({
+                "type": "network"
+            })),
+            _ => Some(serde_json::json!({
+                "type": "network"
+            })),
+        };
+        
+        let mut namespaces = vec![
+            serde_json::json!({"type": "pid"}),
+            serde_json::json!({"type": "ipc"}),
+            serde_json::json!({"type": "uts"}),
+            serde_json::json!({"type": "mount"}),
+        ];
+        
+        if let Some(ns) = network_namespace {
+            namespaces.push(ns);
+        }
+        
         let oci_config = serde_json::json!({
             "ociVersion": "1.0.0",
             "process": {
-                "terminal": false,
+                "terminal": stdio.tty,
                 "user": {
                     "uid": 0,
                     "gid": 0
@@ -131,13 +276,7 @@ impl AgentState {
                         "CAP_NET_BIND_SERVICE"
                     ]
                 },
-                "rlimits": [
-                    {
-                        "type": "RLIMIT_NOFILE",
-                        "hard": 1024,
-                        "soft": 1024
-                    }
-                ],
+                "rlimits": rlimits,
                 "noNewPrivileges": true
             },
             "root": {
@@ -145,63 +284,10 @@ impl AgentState {
                 "readonly": false
             },
             "hostname": container_id,
-            "mounts": [
-                {
-                    "destination": "/proc",
-                    "type": "proc",
-                    "source": "proc"
-                },
-                {
-                    "destination": "/dev",
-                    "type": "tmpfs",
-                    "source": "tmpfs",
-                    "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
-                },
-                {
-                    "destination": "/dev/pts",
-                    "type": "devpts",
-                    "source": "devpts",
-                    "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"]
-                },
-                {
-                    "destination": "/dev/shm",
-                    "type": "tmpfs",
-                    "source": "shm",
-                    "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
-                },
-                {
-                    "destination": "/sys",
-                    "type": "sysfs",
-                    "source": "sysfs",
-                    "options": ["nosuid", "noexec", "nodev", "ro"]
-                }
-            ],
+            "mounts": mounts,
             "linux": {
-                "resources": {
-                    "devices": [
-                        {
-                            "allow": false,
-                            "access": "rwm"
-                        }
-                    ]
-                },
-                "namespaces": [
-                    {
-                        "type": "pid"
-                    },
-                    {
-                        "type": "network"
-                    },
-                    {
-                        "type": "ipc"
-                    },
-                    {
-                        "type": "uts"
-                    },
-                    {
-                        "type": "mount"
-                    }
-                ],
+                "resources": resources_obj,
+                "namespaces": namespaces,
                 "maskedPaths": [
                     "/proc/kcore",
                     "/proc/latency",
@@ -249,6 +335,11 @@ impl Drop for AgentState {
 }
 
 fn main() {
+    // Initialize logging
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+    
     // Remove old socket if it exists
     let _ = std::fs::remove_file("/tmp/libcrun-shim.sock");
     
@@ -256,7 +347,7 @@ fn main() {
     let listener = UnixListener::bind("/tmp/libcrun-shim.sock")
         .expect("Failed to bind to socket");
     
-    println!("Agent listening on /tmp/libcrun-shim.sock");
+    log::info!("Agent listening on /tmp/libcrun-shim.sock");
     
     // Create shared state
     let state = Arc::new(AgentState::new());
@@ -268,7 +359,7 @@ fn main() {
                 std::thread::spawn(move || handle_client(stream, state_clone));
             }
             Err(e) => {
-                eprintln!("Connection error: {}", e);
+                log::error!("Connection error: {}", e);
             }
         }
     }
@@ -284,6 +375,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<AgentState>) {
                 let request = match deserialize_request(&buffer[..n]) {
                     Ok(req) => req,
                     Err(e) => {
+                        log::warn!("Failed to parse request: {}", e);
                         let response = Response::Error(format!("Parse error: {}", e));
                         let _ = stream.write_all(&serialize_response(&response));
                         continue;
@@ -292,12 +384,12 @@ fn handle_client(mut stream: UnixStream, state: Arc<AgentState>) {
                 
                 let response = handle_request(request, &state);
                 if let Err(e) = stream.write_all(&serialize_response(&response)) {
-                    eprintln!("Write error: {}", e);
+                    log::error!("Write error: {}", e);
                     break;
                 }
             }
             Err(e) => {
-                eprintln!("Read error: {}", e);
+                log::error!("Read error: {}", e);
                 break;
             }
         }
@@ -323,7 +415,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                 }
             }
             
-            println!("Creating container: {}", req.id);
+            log::info!("Creating container: id={}, rootfs={}", req.id, req.rootfs);
             
             // Try to use libcrun if available
             #[cfg(target_os = "linux")]
@@ -335,6 +427,10 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                     &req.env,
                     &req.working_dir,
                     &req.id,
+                    &req.stdio,
+                    &req.network,
+                    &req.volumes,
+                    &req.resources,
                 ) {
                     Ok(json) => json,
                     Err(e) => {
@@ -349,7 +445,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                             match crun::container_create(*ctx, container, &req.id) {
                                 Ok(_) => {
-                                    println!("Container '{}' created via libcrun", req.id);
+                                    log::info!("Container '{}' created successfully via libcrun", req.id);
                                     Some(LibcrunContainer(container))
                                 }
                                 Err(e) => {
@@ -366,7 +462,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         }
                     }
                     Err(e) => {
-                        println!("libcrun container load failed: {}, using fallback", e.message);
+                        log::warn!("libcrun container load failed: {}, using fallback mode", e.message);
                         None
                     }
                 }
@@ -411,7 +507,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                                     match crun::container_start(*ctx, container, &id) {
                                         Ok(_) => {
-                                            println!("Container '{}' started via libcrun", id);
+                                            log::info!("Container '{}' started successfully via libcrun", id);
                                             // Try to get actual PID from container state
                                             c.pid = crun::get_container_pid(&id)
                                                 .or_else(|| {
@@ -421,8 +517,10 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                             
                                             // If we still don't have a PID, use placeholder
                                             if c.pid.is_none() {
-                                                println!("Warning: Could not get PID for container '{}', using placeholder", id);
+                                                log::warn!("Could not retrieve PID for container '{}' from libcrun state, using placeholder", id);
                                                 c.pid = Some(std::process::id()); // Placeholder
+                                            } else {
+                                                log::debug!("Container '{}' PID: {:?}", id, c.pid);
                                             }
                                         }
                                         Err(e) => {
@@ -437,7 +535,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                         }
                         
                         if c.status != "Running" {
-                            println!("Starting container: {} (fallback mode)", id);
+                            log::info!("Starting container: {} (fallback mode)", id);
                             c.status = "Running".to_string();
                             c.pid = Some(std::process::id()); // Placeholder
                         }
@@ -465,7 +563,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                     // Use SIGTERM to stop gracefully
                                     match crun::container_kill(*ctx, container, &id, libc::SIGTERM) {
                                         Ok(_) => {
-                                            println!("Container '{}' stopped via libcrun", id);
+                                            log::info!("Container '{}' stopped successfully via libcrun (SIGTERM)", id);
                                         }
                                         Err(e) => {
                                             return Response::Error(format!(
@@ -480,7 +578,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                             }
                         }
                         
-                        println!("Stopping container: {}", id);
+                        log::info!("Stopping container: {}", id);
                         c.status = "Stopped".to_string();
                         c.pid = None;
                         Response::Stopped
@@ -505,11 +603,11 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                                 if let Some(LibcrunContext(ctx)) = &state.libcrun_context {
                                     match crun::container_delete(*ctx, container, &id) {
                                         Ok(_) => {
-                                            println!("Container '{}' deleted via libcrun", id);
+                                            log::info!("Container '{}' deleted successfully via libcrun", id);
                                         }
                                         Err(e) => {
                                             // Still remove from our state even if libcrun delete fails
-                                            println!("Warning: libcrun delete failed: {}", e.message);
+                                            log::warn!("libcrun delete failed for container '{}': {}. Removing from internal state anyway.", id, e.message);
                                         }
                                     }
                                     // Free the container pointer
@@ -518,7 +616,7 @@ fn handle_request(request: Request, state: &AgentState) -> Response {
                             }
                         }
                         
-                        println!("Deleting container: {}", id);
+                        log::info!("Deleting container: {}", id);
                         containers.remove(&id);
                         Response::Deleted
                     }

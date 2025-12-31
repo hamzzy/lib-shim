@@ -4,7 +4,12 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Creating container runtime...");
+    // Initialize logging (optional)
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+    
+    log::info!("Creating container runtime...");
     let runtime = ContainerRuntime::new().await?;
     
     // Create a container configuration
@@ -16,41 +21,41 @@ async fn main() -> Result<()> {
         working_dir: "/".to_string(),
     };
     
-    println!("Creating container: {}", config.id);
+    log::info!("Creating container: {}", config.id);
     let id = runtime.create(config).await?;
-    println!("Container created: {}", id);
+    log::info!("Container created: {}", id);
     
     // List containers
-    println!("\nListing containers:");
+    log::info!("Listing containers:");
     let containers = runtime.list().await?;
     for container in &containers {
-        println!("  - {}: {:?}", container.id, container.status);
+        log::info!("  - {}: {:?}", container.id, container.status);
     }
     
     // Start the container
-    println!("\nStarting container: {}", id);
+    log::info!("Starting container: {}", id);
     runtime.start(&id).await?;
-    println!("Container started");
+    log::info!("Container started");
     
     // List again to see running status
     let containers = runtime.list().await?;
     for container in &containers {
-        println!("  - {}: {:?} (PID: {:?})", container.id, container.status, container.pid);
+        log::info!("  - {}: {:?} (PID: {:?})", container.id, container.status, container.pid);
     }
     
     // Stop the container
-    println!("\nStopping container: {}", id);
+    log::info!("Stopping container: {}", id);
     runtime.stop(&id).await?;
-    println!("Container stopped");
+    log::info!("Container stopped");
     
     // Delete the container
-    println!("\nDeleting container: {}", id);
+    log::info!("Deleting container: {}", id);
     runtime.delete(&id).await?;
-    println!("Container deleted");
+    log::info!("Container deleted");
     
     // Final list (should be empty)
     let containers = runtime.list().await?;
-    println!("\nFinal container count: {}", containers.len());
+    log::info!("Final container count: {}", containers.len());
     
     Ok(())
 }

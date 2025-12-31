@@ -72,6 +72,10 @@ async fn test_macos_rpc_communication() {
         command: vec!["sh".to_string()],
         env: vec![],
         working_dir: "/".to_string(),
+        stdio: StdioConfigProto::default(),
+        network: NetworkConfigProto::default(),
+        volumes: vec![],
+        resources: ResourceLimitsProto::default(),
     });
     
     match client.call(create_req).unwrap() {
@@ -107,6 +111,10 @@ async fn test_linux_runtime_integration() {
         command: vec!["echo".to_string(), "hello".to_string()],
         env: vec!["PATH=/usr/bin:/bin".to_string()],
         working_dir: "/".to_string(),
+        stdio: Default::default(),
+        network: Default::default(),
+        volumes: vec![],
+        resources: Default::default(),
     };
     
     // Create container

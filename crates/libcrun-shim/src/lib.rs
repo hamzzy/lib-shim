@@ -72,7 +72,6 @@ trait RuntimeImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[tokio::test]
     #[cfg(target_os = "linux")]

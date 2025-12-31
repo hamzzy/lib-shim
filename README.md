@@ -4,15 +4,17 @@ A unified Rust library for running OCI containers on Linux and macOS.
 
 ## Features
 
-- Single unified API for both Linux and macOS
-- Async/await support
-- Complete container lifecycle management (create, start, stop, delete, list)
-- Thread-safe state management
-- Comprehensive error handling and validation
-- macOS Virtualization Framework integration (ready for VM management)
-- Vsock communication support (with Unix socket fallback)
-- RPC protocol for host-guest communication
-- Integration tests and examples
+- **Single unified API** for both Linux and macOS
+- **Async/await support** for all operations
+- **Complete container lifecycle** management (create, start, stop, delete, list)
+- **Real libcrun integration** when available (with graceful fallback)
+- **Thread-safe state management** with proper resource cleanup
+- **Enhanced error messages** with context and actionable suggestions
+- **Structured logging** using the `log` crate
+- **OCI-compliant** container configuration generation
+- **PID retrieval** from container state
+- **Docker-based testing** for macOS developers
+- **CI/CD ready** with GitHub Actions
 
 ## Usage
 
@@ -20,19 +22,42 @@ A unified Rust library for running OCI containers on Linux and macOS.
 use libcrun_shim::*;
 
 #[tokio::main]
-async fn main() {
-    let runtime = ContainerRuntime::new().await.unwrap();
+async fn main() -> Result<()> {
+    // Initialize logging (optional)
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+    
+    let runtime = ContainerRuntime::new().await?;
     
     let config = ContainerConfig {
         id: "my-container".to_string(),
         rootfs: "/path/to/rootfs".into(),
         command: vec!["sh".to_string()],
-        env: vec![],
+        env: vec!["PATH=/usr/bin:/bin".to_string()],
         working_dir: "/".to_string(),
     };
     
-    runtime.create(config).await.unwrap();
-    runtime.start("my-container").await.unwrap();
+    // Create container
+    let id = runtime.create(config).await?;
+    log::info!("Container created: {}", id);
+    
+    // Start container
+    runtime.start(&id).await?;
+    log::info!("Container started");
+    
+    // List containers
+    let containers = runtime.list().await?;
+    for container in &containers {
+        log::info!("Container: {} - Status: {:?} - PID: {:?}", 
+            container.id, container.status, container.pid);
+    }
+    
+    // Stop and delete
+    runtime.stop(&id).await?;
+    runtime.delete(&id).await?;
+    
+    Ok(())
 }
 ```
 
@@ -107,19 +132,23 @@ cargo run --example basic_usage
 - Vsock communication structure (with Unix fallback)
 - macOS Virtualization Framework structure
 
-✅ **Recently Completed:**
-- Real libcrun FFI integration in Linux runtime (works when libcrun installed)
-- Real libcrun FFI integration in agent (works when libcrun installed)
+✅ **Completed:**
+- Real libcrun FFI integration in Linux runtime and agent
+- PID retrieval from libcrun container state files
+- Complete OCI config generation with namespaces, mounts, and security
+- Enhanced error messages with context information
+- Structured logging throughout the codebase
 - Docker-based testing setup for macOS users
 - GitHub Actions CI/CD for automated testing
+- Thread-safe libcrun pointer wrappers
+- Comprehensive validation and error handling
 
-🚧 **In Progress / Future:**
-- Get actual PID from libcrun container state (currently placeholder)
+🚧 **Future Enhancements:**
 - Full macOS Virtualization Framework VM creation (structure ready)
 - Real vsock implementation (currently uses Unix socket fallback)
 - Container stdio handling
-- File mounting support
-- More complete OCI config generation
+- Advanced file mounting support
+- Container networking configuration
 
 ## License
 
