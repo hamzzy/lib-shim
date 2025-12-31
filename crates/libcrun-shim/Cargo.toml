@@ -1,0 +1,16 @@
+[package]
+name = "libcrun-shim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+libcrun-shim-proto = { path = "../libcrun-shim-proto" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libcrun-sys = { path = "../libcrun-sys" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+

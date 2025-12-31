@@ -1,0 +1,9 @@
+[package]
+name = "libcrun-shim-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libcrun-shim-proto = { path = "../libcrun-shim-proto" }
+libcrun-sys = { path = "../libcrun-sys" }
+

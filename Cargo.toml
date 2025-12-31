@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/libcrun-shim",
+    "crates/libcrun-sys",
+    "crates/libcrun-shim-proto",
+    "crates/libcrun-shim-agent",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
