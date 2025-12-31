@@ -1,5 +1,6 @@
 mod vm;
-mod rpc;
+pub mod rpc;
+mod vsock;
 
 use crate::*;
 use libcrun_shim_proto::*;

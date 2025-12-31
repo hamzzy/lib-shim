@@ -5,7 +5,7 @@ mod error;
 mod linux;
 
 #[cfg(target_os = "macos")]
-mod macos;
+pub mod macos;
 
 pub use types::*;
 pub use error::*;

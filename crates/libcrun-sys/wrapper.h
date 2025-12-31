@@ -5,21 +5,71 @@
 extern "C" {
 #endif
 
-// Basic types and structures
-// These are placeholders - in a real implementation, we'd include
-// the actual libcrun headers: #include <libcrun/container.h>
+// Try to include actual libcrun headers if available
+#if __has_include(<libcrun/container.h>)
+#include <libcrun/container.h>
+#include <libcrun/context.h>
+#include <libcrun/error.h>
+#else
+// Fallback: forward declarations when headers not available
+// These match the actual libcrun API structure
 
-typedef struct crun_container_s crun_container_t;
-typedef struct crun_runtime_s crun_runtime_t;
+typedef struct libcrun_container_s libcrun_container_t;
+typedef struct libcrun_context_s libcrun_context_t;
+typedef struct libcrun_error_s libcrun_error_t;
 
-// Function declarations (stubs for now)
-// In a real implementation, these would come from libcrun headers
+// Error handling
+void libcrun_error_release(libcrun_error_t **err);
 
-int crun_container_create(crun_container_t *container, const char *id);
-int crun_container_start(crun_container_t *container, const char *id);
-int crun_container_kill(crun_container_t *container, const char *id, int signal);
-int crun_container_delete(crun_container_t *container, const char *id);
-int crun_container_list(crun_container_t **containers, size_t *count);
+// Container operations
+libcrun_container_t* libcrun_container_load_from_memory(
+    const char *config_json,
+    libcrun_error_t **err
+);
+
+int libcrun_container_create(
+    libcrun_context_t *context,
+    libcrun_container_t *container,
+    const char *id,
+    libcrun_error_t **err
+);
+
+int libcrun_container_start(
+    libcrun_context_t *context,
+    libcrun_container_t *container,
+    const char *id,
+    libcrun_error_t **err
+);
+
+int libcrun_container_kill(
+    libcrun_context_t *context,
+    libcrun_container_t *container,
+    const char *id,
+    int signal,
+    libcrun_error_t **err
+);
+
+int libcrun_container_delete(
+    libcrun_context_t *context,
+    libcrun_container_t *container,
+    const char *id,
+    libcrun_error_t **err
+);
+
+int libcrun_container_state(
+    libcrun_context_t *context,
+    libcrun_container_t *container,
+    const char *id,
+    libcrun_error_t **err
+);
+
+void libcrun_container_free(libcrun_container_t *container);
+
+// Context operations
+libcrun_context_t* libcrun_context_new(libcrun_error_t **err);
+void libcrun_context_free(libcrun_context_t *context);
+
+#endif
 
 #ifdef __cplusplus
 }
