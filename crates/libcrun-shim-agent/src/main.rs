@@ -1360,7 +1360,8 @@ fn read_log_file(path: &str, tail: u32) -> String {
 }
 
 /// Collect metrics for a container from cgroups
-fn collect_container_metrics(id: &str, _pid: Option<u32>) -> ContainerMetricsProto {
+#[allow(unused_variables)]
+fn collect_container_metrics(id: &str, pid: Option<u32>) -> ContainerMetricsProto {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

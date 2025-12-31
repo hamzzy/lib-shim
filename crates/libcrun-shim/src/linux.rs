@@ -10,6 +10,7 @@ use libcrun_sys::{LibcrunContainerPtr, LibcrunContextPtr};
 
 // Internal container state that includes the config
 struct ContainerState {
+    #[allow(dead_code)]
     config: ContainerConfig,
     info: ContainerInfo,
     #[cfg(target_os = "linux")]
