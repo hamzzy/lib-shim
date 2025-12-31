@@ -161,8 +161,11 @@ dependencies = [
 name = "libcrun-shim-agent"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "libcrun-shim-proto",
  "libcrun-sys",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -180,6 +183,7 @@ dependencies = [
  "bindgen",
  "libc",
  "pkg-config",
+ "serde_json",
 ]
 
 [[package]]

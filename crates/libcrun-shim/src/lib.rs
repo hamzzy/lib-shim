@@ -79,9 +79,13 @@ mod tests {
     async fn test_create_and_list() {
         let runtime = ContainerRuntime::new().await.unwrap();
         
+        // Create a temporary rootfs directory for testing
+        let temp_rootfs = std::env::temp_dir().join(format!("test-rootfs-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_rootfs).unwrap();
+        
         let config = ContainerConfig {
             id: "test-container".to_string(),
-            rootfs: "/tmp/rootfs".into(),
+            rootfs: temp_rootfs.clone(),
             command: vec!["sh".to_string()],
             env: vec!["PATH=/usr/bin".to_string()],
             working_dir: "/".to_string(),
@@ -93,6 +97,9 @@ mod tests {
         let containers = runtime.list().await.unwrap();
         assert_eq!(containers.len(), 1);
         assert_eq!(containers[0].id, "test-container");
+        
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_rootfs);
     }
 
     #[tokio::test]
@@ -100,9 +107,13 @@ mod tests {
     async fn test_container_lifecycle() {
         let runtime = ContainerRuntime::new().await.unwrap();
         
+        // Create a temporary rootfs directory for testing
+        let temp_rootfs = std::env::temp_dir().join(format!("test-lifecycle-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_rootfs).unwrap();
+        
         let config = ContainerConfig {
             id: "test".to_string(),
-            rootfs: "/tmp/rootfs".into(),
+            rootfs: temp_rootfs.clone(),
             command: vec!["sleep".to_string(), "10".to_string()],
             env: vec![],
             working_dir: "/".to_string(),
@@ -128,6 +139,9 @@ mod tests {
         // List should be empty
         let containers = runtime.list().await.unwrap();
         assert_eq!(containers.len(), 0);
+        
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_rootfs);
     }
 }
 

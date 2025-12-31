@@ -69,6 +69,18 @@ cargo build
 
 ## Running Tests
 
+### On macOS
+
+```bash
+# Unit tests (macOS-specific)
+cargo test
+
+# Test Linux functionality using Docker
+./scripts/test-linux.sh
+```
+
+### On Linux
+
 ```bash
 # Unit tests
 cargo test
@@ -79,6 +91,8 @@ cargo test --test integration_test
 # Run example
 cargo run --example basic_usage
 ```
+
+**Note:** For testing Linux functionality on macOS, see [TESTING.md](TESTING.md) for detailed instructions.
 
 ## Implementation Status
 
@@ -93,12 +107,19 @@ cargo run --example basic_usage
 - Vsock communication structure (with Unix fallback)
 - macOS Virtualization Framework structure
 
+✅ **Recently Completed:**
+- Real libcrun FFI integration in Linux runtime (works when libcrun installed)
+- Real libcrun FFI integration in agent (works when libcrun installed)
+- Docker-based testing setup for macOS users
+- GitHub Actions CI/CD for automated testing
+
 🚧 **In Progress / Future:**
-- Actual libcrun FFI integration (structure ready, needs libcrun installed)
+- Get actual PID from libcrun container state (currently placeholder)
 - Full macOS Virtualization Framework VM creation (structure ready)
 - Real vsock implementation (currently uses Unix socket fallback)
 - Container stdio handling
 - File mounting support
+- More complete OCI config generation
 
 ## License
 

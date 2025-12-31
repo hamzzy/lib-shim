@@ -314,5 +314,58 @@ pub mod safe {
             Ok(())
         }
     }
+
+    /// Get container PID by reading from state file
+    /// This is a fallback method when container_state doesn't provide PID directly
+    pub fn get_container_pid(id: &str) -> Option<u32> {
+        use std::fs;
+        use std::path::PathBuf;
+        
+        // Try common locations for crun state files
+        let state_paths = vec![
+            PathBuf::from(format!("/run/crun/{}", id)),
+            PathBuf::from(format!("/run/crun/{}/state.json", id)),
+            PathBuf::from(format!("/var/run/crun/{}", id)),
+            PathBuf::from(format!("/var/run/crun/{}/state.json", id)),
+        ];
+        
+        for path in state_paths {
+            if path.is_file() {
+                // Try to read and parse JSON state file
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        // Try different possible JSON structures
+                        if let Some(pid) = json.get("pid")
+                            .or_else(|| json.get("init_process_pid"))
+                            .or_else(|| json.get("state").and_then(|s| s.get("pid")))
+                        {
+                            if let Some(pid_num) = pid.as_u64() {
+                                return Some(pid_num as u32);
+                            }
+                        }
+                    }
+                }
+            } else if path.is_dir() {
+                // Try state.json in the directory
+                let state_file = path.join("state.json");
+                if state_file.exists() {
+                    if let Ok(content) = fs::read_to_string(&state_file) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(pid) = json.get("pid")
+                                .or_else(|| json.get("init_process_pid"))
+                                .or_else(|| json.get("state").and_then(|s| s.get("pid")))
+                            {
+                                if let Some(pid_num) = pid.as_u64() {
+                                    return Some(pid_num as u32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        None
+    }
 }
 

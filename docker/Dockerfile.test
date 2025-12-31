@@ -1,0 +1,58 @@
+# Dockerfile for testing libcrun-shim on Linux
+FROM ubuntu:22.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies for crun/libcrun
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    pkg-config \
+    libyajl-dev \
+    libseccomp-dev \
+    libcap-dev \
+    git \
+    ca-certificates \
+    autoconf \
+    automake \
+    libtool \
+    make \
+    python3 \
+    python3-pip \
+    libsystemd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build and install crun (which provides libcrun)
+RUN cd /tmp && \
+    git clone https://github.com/containers/crun.git && \
+    cd crun && \
+    ./autogen.sh && \
+    ./configure --enable-shared --prefix=/usr/local && \
+    make && \
+    make install && \
+    ldconfig && \
+    cd / && \
+    rm -rf /tmp/crun
+
+# Set PKG_CONFIG_PATH so pkg-config can find libcrun
+ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy the project
+COPY . .
+
+# Verify libcrun installation
+RUN pkg-config --exists libcrun && echo "✓ libcrun found" || echo "✗ libcrun not found" && \
+    pkg-config --modversion libcrun || true
+
+# Build and test
+CMD ["bash", "-c", "cargo build --workspace && cargo test --workspace"]
+

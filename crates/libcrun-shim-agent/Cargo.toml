@@ -6,4 +6,7 @@ edition = "2021"
 [dependencies]
 libcrun-shim-proto = { path = "../libcrun-shim-proto" }
 libcrun-sys = { path = "../libcrun-sys" }
+serde_json = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
 

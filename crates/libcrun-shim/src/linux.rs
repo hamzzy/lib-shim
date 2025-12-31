@@ -79,9 +79,17 @@ impl LinuxRuntime {
     }
     
     #[cfg(target_os = "linux")]
-    fn build_oci_config_json(config: &ContainerConfig) -> Result<String, serde_json::Error> {
-        // Build a minimal OCI config JSON from our ContainerConfig
-        // This is a simplified version - a real implementation would be more complete
+    fn build_oci_config_json(config: &ContainerConfig) -> Result<String> {
+        // Build a complete OCI config JSON from our ContainerConfig
+        // Following OCI Runtime Specification v1.0.0
+        
+        // Ensure PATH is in env if not provided
+        let mut env = config.env.clone();
+        let has_path = env.iter().any(|e| e.starts_with("PATH="));
+        if !has_path {
+            env.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());
+        }
+        
         let oci_config = serde_json::json!({
             "ociVersion": "1.0.0",
             "process": {
@@ -91,16 +99,140 @@ impl LinuxRuntime {
                     "gid": 0
                 },
                 "args": config.command,
-                "env": config.env,
-                "cwd": config.working_dir
+                "env": env,
+                "cwd": config.working_dir,
+                "capabilities": {
+                    "bounding": [
+                        "CAP_AUDIT_WRITE",
+                        "CAP_KILL",
+                        "CAP_NET_BIND_SERVICE"
+                    ],
+                    "effective": [
+                        "CAP_AUDIT_WRITE",
+                        "CAP_KILL",
+                        "CAP_NET_BIND_SERVICE"
+                    ],
+                    "inheritable": [
+                        "CAP_AUDIT_WRITE",
+                        "CAP_KILL",
+                        "CAP_NET_BIND_SERVICE"
+                    ],
+                    "permitted": [
+                        "CAP_AUDIT_WRITE",
+                        "CAP_KILL",
+                        "CAP_NET_BIND_SERVICE"
+                    ],
+                    "ambient": [
+                        "CAP_AUDIT_WRITE",
+                        "CAP_KILL",
+                        "CAP_NET_BIND_SERVICE"
+                    ]
+                },
+                "rlimits": [
+                    {
+                        "type": "RLIMIT_NOFILE",
+                        "hard": 1024,
+                        "soft": 1024
+                    }
+                ],
+                "noNewPrivileges": true
             },
             "root": {
                 "path": config.rootfs.display().to_string(),
                 "readonly": false
+            },
+            "hostname": config.id.clone(),
+            "mounts": [
+                {
+                    "destination": "/proc",
+                    "type": "proc",
+                    "source": "proc"
+                },
+                {
+                    "destination": "/dev",
+                    "type": "tmpfs",
+                    "source": "tmpfs",
+                    "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
+                },
+                {
+                    "destination": "/dev/pts",
+                    "type": "devpts",
+                    "source": "devpts",
+                    "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"]
+                },
+                {
+                    "destination": "/dev/shm",
+                    "type": "tmpfs",
+                    "source": "shm",
+                    "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+                },
+                {
+                    "destination": "/dev/mqueue",
+                    "type": "mqueue",
+                    "source": "mqueue",
+                    "options": ["nosuid", "noexec", "nodev"]
+                },
+                {
+                    "destination": "/sys",
+                    "type": "sysfs",
+                    "source": "sysfs",
+                    "options": ["nosuid", "noexec", "nodev", "ro"]
+                },
+                {
+                    "destination": "/sys/fs/cgroup",
+                    "type": "cgroup",
+                    "source": "cgroup",
+                    "options": ["nosuid", "noexec", "nodev", "relatime", "ro"]
+                }
+            ],
+            "linux": {
+                "resources": {
+                    "devices": [
+                        {
+                            "allow": false,
+                            "access": "rwm"
+                        }
+                    ]
+                },
+                "namespaces": [
+                    {
+                        "type": "pid"
+                    },
+                    {
+                        "type": "network"
+                    },
+                    {
+                        "type": "ipc"
+                    },
+                    {
+                        "type": "uts"
+                    },
+                    {
+                        "type": "mount"
+                    }
+                ],
+                "maskedPaths": [
+                    "/proc/kcore",
+                    "/proc/latency",
+                    "/proc/timer_list",
+                    "/proc/timer_stats",
+                    "/proc/sched_debug",
+                    "/proc/scsi",
+                    "/sys/firmware"
+                ],
+                "readonlyPaths": [
+                    "/proc/asound",
+                    "/proc/bus",
+                    "/proc/fs",
+                    "/proc/irq",
+                    "/proc/sys",
+                    "/proc/sysrq-trigger"
+                ]
             }
         });
         
-        serde_json::to_string(&oci_config)
+        serde_json::to_string_pretty(&oci_config)
+            .map_err(|e| ShimError::Serialization(e.to_string()))
     }
     
     fn validate_config(config: &ContainerConfig) -> Result<()> {
@@ -190,8 +322,9 @@ impl RuntimeImpl for LinuxRuntime {
         let libcrun_container = None;
         
         // Store the container state
+        let container_id = config.id.clone();
         let info = ContainerInfo {
-            id: config.id.clone(),
+            id: container_id.clone(),
             status: ContainerStatus::Created,
             pid: None,
         };
@@ -203,8 +336,8 @@ impl RuntimeImpl for LinuxRuntime {
             libcrun_container,
         };
         
-        self.containers.write().unwrap().insert(state.info.id.clone(), state);
-        Ok(info.id)
+        self.containers.write().unwrap().insert(container_id.clone(), state);
+        Ok(container_id)
     }
     
     async fn start(&self, id: &str) -> Result<()> {
@@ -239,8 +372,19 @@ impl RuntimeImpl for LinuxRuntime {
                     match crun::container_start(ctx, container, id) {
                         Ok(_) => {
                             println!("Container '{}' started via libcrun", id);
-                            // TODO: Get actual PID from container state
-                            state.info.pid = Some(std::process::id()); // Placeholder
+                            // Try to get actual PID from container state
+                            state.info.pid = crun::get_container_pid(id)
+                                .or_else(|| {
+                                    // Fallback: try to get from container state API
+                                    // Note: This would require parsing state, for now use filesystem method
+                                    None
+                                });
+                            
+                            // If we still don't have a PID, use placeholder
+                            if state.info.pid.is_none() {
+                                println!("Warning: Could not get PID for container '{}', using placeholder", id);
+                                state.info.pid = Some(std::process::id()); // Placeholder
+                            }
                         }
                         Err(e) => {
                             return Err(ShimError::Runtime(format!(

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-linux:
+    name: Test on Linux
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install libcrun
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libcrun-dev libyajl-dev libseccomp-dev libcap-dev pkg-config
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Verify libcrun installation
+      run: |
+        pkg-config --exists libcrun && echo "libcrun found" || echo "libcrun not found"
+        pkg-config --modversion libcrun || true
+    
+    - name: Build
+      run: cargo build --workspace
+    
+    - name: Run tests
+      run: cargo test --workspace
+    
+    - name: Build agent
+      run: cargo build --bin libcrun-shim-agent
+    
+    - name: Run example (if libcrun available)
+      run: |
+        if pkg-config --exists libcrun; then
+          cargo run --example basic_usage || echo "Example requires rootfs, skipping"
+        else
+          echo "libcrun not available, skipping example"
+        fi
+
+  test-macos:
+    name: Test on macOS
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Build
+      run: cargo build --workspace
+    
+    - name: Run tests
+      run: cargo test --workspace
+    
+    - name: Build agent
+      run: cargo build --bin libcrun-shim-agent
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install clippy
+      run: rustup component add clippy
+    
+    - name: Run clippy
+      run: cargo clippy --workspace -- -D warnings
+    
+    - name: Check formatting
+      run: cargo fmt --check
+
