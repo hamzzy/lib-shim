@@ -8,21 +8,55 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-// Mark raw pointer types as Send/Sync for use across threads
-// These are safe because libcrun operations are thread-safe and the pointers
-// are only accessed through the safe wrapper functions
-#[cfg(target_os = "linux")]
-unsafe impl Send for *mut libcrun_context_t {}
-#[cfg(target_os = "linux")]
-unsafe impl Sync for *mut libcrun_context_t {}
-#[cfg(target_os = "linux")]
-unsafe impl Send for *mut libcrun_container_t {}
-#[cfg(target_os = "linux")]
-unsafe impl Sync for *mut libcrun_container_t {}
-#[cfg(target_os = "linux")]
-unsafe impl Send for *mut libcrun_error_t {}
-#[cfg(target_os = "linux")]
-unsafe impl Sync for *mut libcrun_error_t {}
+/// Thread-safe wrapper for libcrun context pointer
+/// 
+/// # Safety
+/// This wrapper is safe because libcrun context operations are thread-safe
+/// and access is synchronized through the containing struct's RwLock.
+#[derive(Debug)]
+pub struct LibcrunContextPtr(pub *mut libcrun_context_t);
+
+unsafe impl Send for LibcrunContextPtr {}
+unsafe impl Sync for LibcrunContextPtr {}
+
+impl LibcrunContextPtr {
+    pub fn new(ptr: *mut libcrun_context_t) -> Self {
+        Self(ptr)
+    }
+    
+    pub fn as_ptr(&self) -> *mut libcrun_context_t {
+        self.0
+    }
+    
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+}
+
+/// Thread-safe wrapper for libcrun container pointer
+/// 
+/// # Safety
+/// This wrapper is safe because libcrun container operations are thread-safe
+/// and access is synchronized through the containing struct's RwLock.
+#[derive(Debug)]
+pub struct LibcrunContainerPtr(pub *mut libcrun_container_t);
+
+unsafe impl Send for LibcrunContainerPtr {}
+unsafe impl Sync for LibcrunContainerPtr {}
+
+impl LibcrunContainerPtr {
+    pub fn new(ptr: *mut libcrun_container_t) -> Self {
+        Self(ptr)
+    }
+    
+    pub fn as_ptr(&self) -> *mut libcrun_container_t {
+        self.0
+    }
+    
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+}
 
 // Safe wrappers around the FFI functions
 pub mod safe {

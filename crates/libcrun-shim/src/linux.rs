@@ -5,19 +5,21 @@ use std::sync::RwLock;
 
 #[cfg(target_os = "linux")]
 use libcrun_sys::safe as crun;
+#[cfg(target_os = "linux")]
+use libcrun_sys::{LibcrunContainerPtr, LibcrunContextPtr};
 
 // Internal container state that includes the config
 struct ContainerState {
     config: ContainerConfig,
     info: ContainerInfo,
     #[cfg(target_os = "linux")]
-    libcrun_container: Option<*mut libcrun_sys::libcrun_container_t>,
+    libcrun_container: Option<LibcrunContainerPtr>,
 }
 
 pub struct LinuxRuntime {
     containers: RwLock<HashMap<String, ContainerState>>,
     #[cfg(target_os = "linux")]
-    libcrun_context: Option<*mut libcrun_sys::libcrun_context_t>,
+    libcrun_context: Option<LibcrunContextPtr>,
     #[cfg(target_os = "linux")]
     libcrun_available: bool,
 }
@@ -28,15 +30,15 @@ impl Drop for LinuxRuntime {
         {
             // Clean up libcrun context
             if let Some(ctx) = self.libcrun_context.take() {
-                crun::context_free(ctx);
+                crun::context_free(ctx.as_ptr());
             }
 
             // Clean up any remaining containers
             let containers = self.containers.write().unwrap();
             for (_, state) in containers.iter() {
                 #[cfg(target_os = "linux")]
-                if let Some(container) = state.libcrun_container {
-                    crun::container_free(container);
+                if let Some(ref container) = state.libcrun_container {
+                    crun::container_free(container.as_ptr());
                 }
             }
         }
@@ -49,7 +51,7 @@ impl LinuxRuntime {
         {
             // Try to initialize libcrun context
             let (context, available) = match crun::context_new() {
-                Ok(ctx) => (Some(ctx), true),
+                Ok(ctx) => (Some(LibcrunContextPtr::new(ctx)), true),
                 Err(_) => {
                     // libcrun not available or failed to initialize
                     // Will use in-memory fallback
@@ -394,14 +396,14 @@ impl RuntimeImpl for LinuxRuntime {
             match crun::container_load_from_memory(&oci_json) {
                 Ok(container) => {
                     // Create the container using libcrun
-                    if let Some(ctx) = self.libcrun_context {
-                        match crun::container_create(ctx, container, &config.id) {
+                    if let Some(ref ctx) = self.libcrun_context {
+                        match crun::container_create(ctx.as_ptr(), container, &config.id) {
                             Ok(_) => {
                                 log::info!(
                                     "Container '{}' created successfully via libcrun",
                                     config.id
                                 );
-                                Some(container)
+                                Some(LibcrunContainerPtr::new(container))
                             }
                             Err(e) => {
                                 crun::container_free(container);
@@ -432,9 +434,6 @@ impl RuntimeImpl for LinuxRuntime {
         } else {
             None
         };
-
-        #[cfg(not(target_os = "linux"))]
-        let libcrun_container = None;
 
         // Store the container state
         let container_id = config.id.clone();
@@ -492,9 +491,9 @@ impl RuntimeImpl for LinuxRuntime {
         // Try to start container via libcrun if available
         #[cfg(target_os = "linux")]
         if self.libcrun_available {
-            if let Some(container) = state.libcrun_container {
-                if let Some(ctx) = self.libcrun_context {
-                    match crun::container_start(ctx, container, id) {
+            if let Some(ref container) = state.libcrun_container {
+                if let Some(ref ctx) = self.libcrun_context {
+                    match crun::container_start(ctx.as_ptr(), container.as_ptr(), id) {
                         Ok(_) => {
                             log::info!("Container '{}' started successfully via libcrun", id);
                             // Try to get actual PID from container state
@@ -560,10 +559,10 @@ impl RuntimeImpl for LinuxRuntime {
         // Try to stop container via libcrun if available
         #[cfg(target_os = "linux")]
         if self.libcrun_available {
-            if let Some(container) = state.libcrun_container {
-                if let Some(ctx) = self.libcrun_context {
+            if let Some(ref container) = state.libcrun_container {
+                if let Some(ref ctx) = self.libcrun_context {
                     // Use SIGTERM to stop gracefully
-                    match crun::container_kill(ctx, container, id, libc::SIGTERM) {
+                    match crun::container_kill(ctx.as_ptr(), container.as_ptr(), id, libc::SIGTERM) {
                         Ok(_) => {
                             log::info!(
                                 "Container '{}' stopped successfully via libcrun (SIGTERM)",
@@ -606,9 +605,9 @@ impl RuntimeImpl for LinuxRuntime {
         // Try to delete container via libcrun if available
         #[cfg(target_os = "linux")]
         if self.libcrun_available {
-            if let Some(container) = state.libcrun_container {
-                if let Some(ctx) = self.libcrun_context {
-                    match crun::container_delete(ctx, container, id) {
+            if let Some(ref container) = state.libcrun_container {
+                if let Some(ref ctx) = self.libcrun_context {
+                    match crun::container_delete(ctx.as_ptr(), container.as_ptr(), id) {
                         Ok(_) => {
                             log::info!("Container '{}' deleted successfully via libcrun", id);
                         }
@@ -618,7 +617,7 @@ impl RuntimeImpl for LinuxRuntime {
                         }
                     }
                     // Free the container pointer
-                    crun::container_free(container);
+                    crun::container_free(container.as_ptr());
                 }
             }
         }
