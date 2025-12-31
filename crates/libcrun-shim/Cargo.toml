@@ -46,3 +46,11 @@ tokio = { workspace = true, features = ["test-util"] }
 name = "basic_usage"
 path = "../../examples/basic_usage.rs"
 
+[[example]]
+name = "health_metrics"
+path = "../../examples/health_metrics.rs"
+
+[[example]]
+name = "production_setup"
+path = "../../examples/production_setup.rs"
+
