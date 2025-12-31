@@ -1,6 +1,11 @@
 mod types;
 mod error;
 pub mod image;
+pub mod events;
+#[cfg(unix)]
+pub mod pty;
+pub mod shim;
+pub mod cri;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -11,6 +16,11 @@ pub mod macos;
 pub use types::*;
 pub use error::*;
 pub use image::ImageStore;
+pub use events::{EventBroadcaster, EventReceiver, global_events, subscribe_events};
+#[cfg(unix)]
+pub use pty::{Pty, InteractiveSession, get_terminal_size};
+pub use shim::{ShimV2, TaskService};
+pub use cri::{CriServer, RuntimeService, ImageService};
 
 pub struct ContainerRuntime {
     #[cfg(target_os = "linux")]

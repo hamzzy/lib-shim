@@ -32,6 +32,14 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub vm_disks: Vec<VmDiskConfig>,
 
+    /// VirtioFS shared directories
+    #[serde(default)]
+    pub virtiofs_shares: Vec<VirtioFsShare>,
+
+    /// Rosetta configuration for x86_64 emulation
+    #[serde(default)]
+    pub rosetta: RosettaConfig,
+
     /// VM network configuration
     #[serde(default)]
     pub vm_network: VmNetworkConfig,
@@ -102,6 +110,55 @@ impl Default for VmNetworkConfig {
     }
 }
 
+/// VirtioFS shared directory configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtioFsShare {
+    /// Host path to share
+    pub host_path: PathBuf,
+    /// Mount tag (used by guest to mount)
+    pub mount_tag: String,
+    /// Read-only mount
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+impl VirtioFsShare {
+    /// Create a new VirtioFS share
+    pub fn new(host_path: impl Into<PathBuf>, mount_tag: impl Into<String>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            mount_tag: mount_tag.into(),
+            read_only: false,
+        }
+    }
+
+    /// Set read-only
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+}
+
+/// Rosetta (x86_64 emulation) configuration for ARM Macs
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RosettaConfig {
+    /// Enable Rosetta for x86_64 container support
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to Rosetta runtime (auto-detected if not specified)
+    pub runtime_path: Option<PathBuf>,
+}
+
+impl RosettaConfig {
+    /// Create enabled Rosetta config
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            runtime_path: None,
+        }
+    }
+}
+
 /// Port forwarding rule for VM
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortForward {
@@ -135,6 +192,8 @@ impl Default for RuntimeConfig {
             vm_cpus: default_vm_cpus(),
             connection_timeout: default_connection_timeout(),
             vm_disks: vec![],
+            virtiofs_shares: vec![],
+            rosetta: RosettaConfig::default(),
             vm_network: VmNetworkConfig::default(),
         }
     }
@@ -255,6 +314,8 @@ pub struct RuntimeConfigBuilder {
     vm_cpus: Option<u32>,
     connection_timeout: Option<u64>,
     vm_disks: Vec<VmDiskConfig>,
+    virtiofs_shares: Vec<VirtioFsShare>,
+    rosetta: Option<RosettaConfig>,
     vm_network: Option<VmNetworkConfig>,
 }
 
@@ -330,6 +391,29 @@ impl RuntimeConfigBuilder {
         self
     }
 
+    /// Add a VirtioFS share
+    pub fn add_virtiofs_share(mut self, share: VirtioFsShare) -> Self {
+        self.virtiofs_shares.push(share);
+        self
+    }
+
+    /// Share a host directory via VirtioFS
+    pub fn share_directory(
+        mut self,
+        host_path: impl Into<PathBuf>,
+        mount_tag: impl Into<String>,
+    ) -> Self {
+        self.virtiofs_shares
+            .push(VirtioFsShare::new(host_path, mount_tag));
+        self
+    }
+
+    /// Enable Rosetta for x86_64 support
+    pub fn enable_rosetta(mut self) -> Self {
+        self.rosetta = Some(RosettaConfig::enabled());
+        self
+    }
+
     pub fn build(self) -> RuntimeConfig {
         RuntimeConfig {
             socket_path: self.socket_path.unwrap_or_else(default_socket_path),
@@ -339,6 +423,8 @@ impl RuntimeConfigBuilder {
             vm_cpus: self.vm_cpus.unwrap_or_else(default_vm_cpus),
             connection_timeout: self.connection_timeout.unwrap_or_else(default_connection_timeout),
             vm_disks: self.vm_disks,
+            virtiofs_shares: self.virtiofs_shares,
+            rosetta: self.rosetta.unwrap_or_default(),
             vm_network: self.vm_network.unwrap_or_default(),
         }
     }
@@ -817,5 +903,88 @@ pub struct PullProgress {
     pub total_bytes: u64,
     /// Status message
     pub status: String,
+}
+
+/// Container event types
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ContainerEventType {
+    /// Container created
+    Create,
+    /// Container started
+    Start,
+    /// Container stopped
+    Stop,
+    /// Container killed
+    Kill,
+    /// Container died (exited)
+    Die,
+    /// Container deleted
+    Delete,
+    /// Container paused
+    Pause,
+    /// Container unpaused
+    Unpause,
+    /// Container health check passed
+    HealthOk,
+    /// Container health check failed
+    HealthFail,
+    /// OOM (out of memory) event
+    Oom,
+    /// Container exec started
+    ExecStart,
+    /// Container exec died
+    ExecDie,
+}
+
+/// Container event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerEvent {
+    /// Event type
+    pub event_type: ContainerEventType,
+    /// Container ID
+    pub container_id: String,
+    /// Timestamp (Unix seconds)
+    pub timestamp: u64,
+    /// Optional exit code (for Die events)
+    pub exit_code: Option<i32>,
+    /// Optional signal (for Kill events)
+    pub signal: Option<i32>,
+    /// Additional attributes
+    pub attributes: std::collections::HashMap<String, String>,
+}
+
+impl ContainerEvent {
+    /// Create a new event
+    pub fn new(event_type: ContainerEventType, container_id: impl Into<String>) -> Self {
+        Self {
+            event_type,
+            container_id: container_id.into(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            exit_code: None,
+            signal: None,
+            attributes: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Set exit code
+    pub fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
+    }
+
+    /// Set signal
+    pub fn with_signal(mut self, signal: i32) -> Self {
+        self.signal = Some(signal);
+        self
+    }
+
+    /// Add attribute
+    pub fn with_attribute(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.attributes.insert(key.into(), value.into());
+        self
+    }
 }
 
